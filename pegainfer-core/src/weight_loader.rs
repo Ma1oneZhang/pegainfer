@@ -810,6 +810,7 @@ pub fn load_tensor_1d_shard(
     load_tensor_1d_stitch(ctx, shards, weight_map, name, &[(offset, len)])
 }
 
+#[allow(clippy::cast_ptr_alignment)]
 /// Load a 1D F32 element range to GPU (tensor-parallel shard of a 1D weight).
 pub fn load_tensor_1d_f32_shard(
     ctx: &DeviceContext,

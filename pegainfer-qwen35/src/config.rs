@@ -319,7 +319,7 @@ impl Config35 {
 }
 
 impl TensorParallelConfig {
-    pub(crate) fn validate_for(self, config: &Config35, enable_cuda_graph: bool) -> Result<()> {
+    pub(crate) fn validate_for(self, config: &Config35) -> Result<()> {
         if self.world_size == 0 {
             return Err(anyhow::anyhow!("tensor_parallel.world_size must be >= 1"));
         }
@@ -330,12 +330,9 @@ impl TensorParallelConfig {
                 self.world_size
             ));
         }
-        if self.is_sharded() && enable_cuda_graph {
-            return Err(anyhow::anyhow!(
-                "Qwen3.5 tensor parallelism is eager-only in Phase 1; disable CUDA Graph for tp world_size={}",
-                self.world_size
-            ));
-        }
+        // CUDA Graph under TP is gated at executor startup on
+        // `local_decode_group_is_compiled` (P2c): uncompiled GQA groups keep
+        // the batched eager path instead of failing validation here.
         if !config.num_attention_heads.is_multiple_of(self.world_size) {
             return Err(anyhow::anyhow!(
                 "num_attention_heads={} not divisible by tp world_size={}",
@@ -423,7 +420,7 @@ mod tp_tests {
         let config = test_config();
         let tp = TensorParallelConfig::default();
 
-        tp.validate_for(&config, true).unwrap();
+        tp.validate_for(&config).unwrap();
         assert!(!tp.is_sharded());
         assert_eq!(tp.shard_range(config.full_attn_q_dim()), (0, 4096));
         assert_eq!(config.local_num_attention_heads(tp), 16);
@@ -442,7 +439,7 @@ mod tp_tests {
             world_size: 2,
         };
 
-        tp.validate_for(&config, false).unwrap();
+        tp.validate_for(&config).unwrap();
         assert!(tp.is_sharded());
         assert_eq!(tp.shard_range(config.full_attn_q_dim()), (2048, 2048));
         assert_eq!(config.local_num_attention_heads(tp), 8);
@@ -461,7 +458,7 @@ mod tp_tests {
             rank: 0,
             world_size: 0,
         }
-        .validate_for(&config, false)
+        .validate_for(&config)
         .unwrap_err()
         .to_string();
         assert!(err.contains("world_size must be >= 1"));
@@ -470,7 +467,7 @@ mod tp_tests {
             rank: 2,
             world_size: 2,
         }
-        .validate_for(&config, false)
+        .validate_for(&config)
         .unwrap_err()
         .to_string();
         assert!(err.contains("rank 2 must be < world_size 2"));
@@ -484,30 +481,50 @@ mod tp_tests {
         };
 
         let mut config = test_config();
-        let err = tp.validate_for(&config, false).unwrap_err().to_string();
+        let err = tp.validate_for(&config).unwrap_err().to_string();
         assert!(err.contains("num_attention_heads=16 not divisible"));
 
         config.num_attention_heads = 15;
         config.num_key_value_heads = 4;
-        let err = tp.validate_for(&config, false).unwrap_err().to_string();
+        let err = tp.validate_for(&config).unwrap_err().to_string();
         assert!(err.contains("num_key_value_heads=4 not divisible"));
 
         config.num_key_value_heads = 3;
         config.intermediate_size = 9217;
-        let err = tp.validate_for(&config, false).unwrap_err().to_string();
+        let err = tp.validate_for(&config).unwrap_err().to_string();
         assert!(err.contains("intermediate_size=9217 not divisible"));
     }
 
     #[test]
-    fn rejects_tensor_parallel_cuda_graph_phase1() {
+    fn tensor_parallel_cuda_graph_gate_follows_local_decode_group() {
+        // P2c: TP + CUDA Graph is no longer rejected; the executor gates graph
+        // capture on the TP-local decode GQA group having a compiled kernel.
+        // The group ratio is TP-invariant, so the local check equals the
+        // global one.
         let config = test_config();
         let tp = TensorParallelConfig {
             rank: 0,
             world_size: 2,
         };
 
-        let err = tp.validate_for(&config, true).unwrap_err().to_string();
-        assert!(err.contains("eager-only in Phase 1"));
+        tp.validate_for(&config)
+            .expect("TP2 + CUDA Graph validates; the group gate decides at startup");
+        assert!(config.local_decode_group_is_compiled(tp));
+        assert_eq!(
+            config.local_decode_group_is_compiled(tp),
+            config.decode_group_is_compiled(),
+            "decode GQA group ratio must be TP-invariant"
+        );
+
+        // 27B shape: 48 q heads / 8 kv heads = group 6, which has no compiled
+        // batch-decode kernel, so its TP2 decode stays eager.
+        let group6 = Config35 {
+            num_attention_heads: 48,
+            num_key_value_heads: 8,
+            ..test_config()
+        };
+        assert!(!group6.decode_group_is_compiled());
+        assert!(!group6.local_decode_group_is_compiled(tp));
     }
 
     #[test]
@@ -519,12 +536,12 @@ mod tp_tests {
 
         let mut config = test_config();
         config.linear_num_key_heads = 17;
-        let err = tp.validate_for(&config, false).unwrap_err().to_string();
+        let err = tp.validate_for(&config).unwrap_err().to_string();
         assert!(err.contains("linear_num_key_heads=17 not divisible"));
 
         config.linear_num_key_heads = 16;
         config.linear_num_value_heads = 31;
-        let err = tp.validate_for(&config, false).unwrap_err().to_string();
+        let err = tp.validate_for(&config).unwrap_err().to_string();
         assert!(err.contains("linear_num_value_heads=31 not divisible"));
     }
 
@@ -536,7 +553,7 @@ mod tp_tests {
             world_size: 2,
         };
 
-        tp.validate_for(&config, false).unwrap();
+        tp.validate_for(&config).unwrap();
         assert_eq!(config.local_linear_num_key_heads(tp), 8);
         assert_eq!(config.local_linear_num_value_heads(tp), 16);
         assert_eq!(config.local_linear_q_dim(tp), 1024);

@@ -1,52 +1,51 @@
-# Qwen3.5-27B TP2 知识基准评测(官方分对比)
+# Qwen3.5-27B TP2 Knowledge Benchmarks (vs Official Scores)
 
-> TL;DR:Qwen3.5-27B 在 pegainfer TP2(2× RTX 4090,batched eager decode)上跑知识基准,C-Eval 88.11(官方 90.5)、MMLU-Redux 94.09(官方 93.2),均在跨 harness 正常带内;MMLU-Pro / SuperGPQA 因运行时长原因仅完成抽样冒烟,未出最终分(见下文)。模型数值无 TP 引入的精度问题。
+> TL;DR: Qwen3.5-27B on pegainfer TP2 (2× RTX 4090, batched eager decode) runs the knowledge benchmarks at C-Eval 88.11 (official 90.5) and MMLU-Redux 94.09 (official 93.2), both inside the normal cross-harness band; MMLU-Pro / SuperGPQA only completed sampled smokes due to runtime cost, no final scores (see below). No TP-induced accuracy issue in the model numerics.
 >
-> 注:分数实测于 rebase 前的 f4c66780 分支(自研 Phase 1/2a 线);rebase 到 #870 后 logits golden gate 两侧一致通过,数值可迁移,但若正式引用请在本 PR 分支上复跑确认。
+> Note: scores were measured on the pre-rebase in-house Phase 1/2a line; after the rebase onto #870 the logits golden gates pass identically on both sides, so the numerics carry over — but rerun on this PR branch before formally citing parity.
 
-## 环境
+## Environment
 
-- GPU:2× RTX 4090(48 GB 版本),`--tp-size 2 --cuda-graph false`(TP+CUDA Graph 仍 fail-closed)
-- 模型:Qwen/Qwen3.5-27B `fc05daec`,BF16,served-model-name `qwen35-27b-tp2`
-- 采样:temperature=0.0,top_p=1.0,chat completions(thinking 模式,即模板默认行为)
-- 评测器:`scripts/eval_mc.py`(自研,统一 `/v1/chat/completions` 并发 48),配方逐项复刻官方 harness:
-  - **C-Eval** = OpenCompass `ceval_gen`:52 学科 val split 全量 1346 题,dev split 5-shot,"答案: " 续写,首大写字母抽取
-  - **MMLU-Redux** = lm-eval `mmlu_redux_generative`:`fxmarty/mmlu-redux-2.0-ok` 57 学科 test 全量 5330 题,0-shot,首个 `[ABCD]` 抽取
-  - **MMLU-Pro** = lm-eval `mmlu_pro`:TIGER-Lab/MMLU-Pro test,validation split 5-shot CoT,`answer is (X)` 抽取
-  - **SuperGPQA** = OpenCompass `supergpqa_gen`:`m-a-p/SuperGPQA` train 26529 题,0-shot,"Answer: X" 字母/内容两层抽取
-- 启动命令:`LD_LIBRARY_PATH=<.venv>/nvidia/nccl/lib ./target/release/pegainfer --model-path <27B> --served-model-name qwen35-27b-tp2 --tp-size 2 --cuda-graph false --port 18082`
-- 结果原始数据:`results/qwen35-27b-tp2-eval/{ceval,mmlu_redux}_samples*.json`(本地,未入库)
+- GPU: 2× RTX 4090 (48 GB variant), `--tp-size 2 --cuda-graph false` (TP + CUDA Graph still fail-closed)
+- Model: Qwen/Qwen3.5-27B `fc05daec`, BF16, served-model-name `qwen35-27b-tp2`
+- Sampling: temperature=0.0, top_p=1.0, chat completions (thinking mode, i.e. the template default)
+- Evaluator: `scripts/eval_mc.py` (in-house, uniform `/v1/chat/completions` at concurrency 48), recipes replicated item-by-item from the official harnesses:
+  - **C-Eval** = OpenCompass `ceval_gen`: 52 subjects, full val split (1346 items), 5-shot from the dev split, `"答案: "` continuation, first-capital-letter extraction
+  - **MMLU-Redux** = lm-eval `mmlu_redux_generative`: `fxmarty/mmlu-redux-2.0-ok`, 57 subjects, full test split (5330 items), 0-shot, first `[ABCD]` extraction
+  - **MMLU-Pro** = lm-eval `mmlu_pro`: TIGER-Lab/MMLU-Pro test, 5-shot CoT from the validation split, `answer is (X)` extraction
+  - **SuperGPQA** = OpenCompass `supergpqa_gen`: `m-a-p/SuperGPQA` train (26529 items), 0-shot, two-tier "Answer: X" letter/content extraction
+- Launch command: `./target/release/pegainfer --model-path <27B> --served-model-name qwen35-27b-tp2 --tp-size 2 --cuda-graph false --port 18082` (NCCL runtime setup in `docs/playbooks/developer-onboarding.md`)
 
-## 结果(截至 2026-08-20,评测按需要提前终止)
+## Results (as of 2026-08-20; runs terminated early as needed)
 
-| 基准 | 官方 | 实测 | n | 口径 | Δ 判定 |
+| Benchmark | Official | Measured | n | Protocol | Δ verdict |
 |---|---|---|---|---|---|
-| MMLU-Redux | 93.2 | **94.09** | 5330 全量 | 8192 cap + 截断重跑合并(32 条重跑,2 条仍截断) | **同带** |
-| C-Eval | 90.5 | **88.11** | 1346 全量 | 8192 cap + 截断重跑合并(48 条重跑,0 条残留) | **同带边缘**(-2.4pp,CI95 ±1.7pp) |
-| MMLU-Pro | 86.1 | — | 600/2000 中止 | 抽样 n=2000(cap 24576)跑到 30% 人工终止;100 题冒烟在 4096 cap 下 51% 截断 | 无最终分 |
-| SuperGPQA | 65.6 | — | 未正式跑 | 100 题冒烟:可完成子集 43 题对金标准确 27/43≈63% | 无最终分 |
+| MMLU-Redux | 93.2 | **94.09** | 5330 full | 8192 cap + truncated-rerun merge (32 rerun, 2 still truncated) | **in band** |
+| C-Eval | 90.5 | **88.11** | 1346 full | 8192 cap + truncated-rerun merge (48 rerun, 0 residual) | **band edge** (-2.4pp, CI95 ±1.7pp) |
+| MMLU-Pro | 86.1 | — | stopped at 600/2000 | sampled n=2000 (cap 24576) manually stopped at 30%; 100-item smoke truncated 51% at cap 4096 | no final score |
+| SuperGPQA | 65.6 | — | no formal run | 100-item smoke: 43 completable items, 27/43 ≈ 63% correct against gold | no final score |
 
-## 关键观察
+## Key Observations
 
-- **没有 TP 精度问题**:27B TP2 HF logits golden gate 全绿;C-Eval 非截断子集(1290/1346)准确率 90.2% ≈ 官方 90.5。C-Eval 的差距全部来自 thinking 长度上限被掐断的最难题,而非模型错算。
-- **MMLU-Redux 略高于官方**(+0.9pp):同带,说明 prompt/抽取/数值链路都对。
-- **thinking 长度是最大的系统变量**:thinking 模型在 C-Eval 上 ~4% 题需要 >8192 token,MMLU-Pro 上 >1/3 题在 4096 内收不住。官方 harness 的 max_tokens 未知(推测 ≥32k);本评测用 8192 首轮 + 32768 重跑合并来逼近。跨 harness ±1–2pp 属正常。
-- **吞吐前置条件**:此评测可行完全依赖 Step 3 的 batched eager TP decode 修复(此前 16 并发聚合仅 ~25 tok/s,全量不可行;修复后 ~450 tok/s @48 并发)。
+- **No TP accuracy issue**: the 27B TP2 HF logits golden gates are all green; on the non-truncated C-Eval subset (1290/1346) accuracy is 90.2% ≈ official 90.5. The C-Eval gap comes entirely from the hardest items cut off by the thinking-length cap, not from model miscomputation.
+- **MMLU-Redux slightly above official** (+0.9pp): in band; the prompt/extraction/numerics chain is sound.
+- **Thinking length is the dominant system variable**: on C-Eval ~4% of items need >8192 tokens with a thinking model; on MMLU-Pro over a third of items do not finish within 4096. The official harnesses' max_tokens is unknown (presumed ≥32k); this eval approximates with an 8192 first pass plus a 32768 rerun merge. ±1–2pp across harnesses is normal.
+- **Throughput precondition**: this eval is feasible only because of the Step 3 batched eager TP decode fix (before it, 16 concurrent requests aggregated ~25 tok/s and full runs were infeasible; after it, ~450 tok/s at 48 concurrent).
 
-## 复现命令
+## Reproduction Commands
 
 ```bash
-# server(见上);评测(hf 镜像):
-HF_ENDPOINT=https://hf-mirror.com .venv/bin/python -u scripts/eval_mc.py ceval --max-tokens 8192 --concurrency 48 --out-dir results/qwen35-27b-tp2-eval
-HF_ENDPOINT=https://hf-mirror.com .venv/bin/python -u scripts/eval_mc.py mmlu_redux --max-tokens 8192 --concurrency 48 --out-dir results/qwen35-27b-tp2-eval
-# 截断样本重跑合并:
+# server (see above); eval:
+.venv/bin/python -u scripts/eval_mc.py ceval --max-tokens 8192 --concurrency 48 --out-dir results/qwen35-27b-tp2-eval
+.venv/bin/python -u scripts/eval_mc.py mmlu_redux --max-tokens 8192 --concurrency 48 --out-dir results/qwen35-27b-tp2-eval
+# rerun-and-merge truncated samples:
 .venv/bin/python -u scripts/eval_rerun_truncated.py ceval --max-tokens 32768 --concurrency 16
-# 抽样(--sample 按学科比例分层,seed 1337,n=2000 时 CI95 半宽 ±1.3pp):
+# sampling (--sample stratifies by subject proportionally, seed 1337; at n=2000 the CI95 half-width is ±1.3pp):
 .venv/bin/python -u scripts/eval_mc.py mmlu_pro --sample 2000 --max-tokens 24576 --concurrency 48
 .venv/bin/python -u scripts/eval_mc.py supergpqa --sample 2000 --max-tokens 24576 --concurrency 48
 ```
 
-## 下一步
+## Next Steps
 
-- 补齐 MMLU-Pro / SuperGPQA 抽样全量(各 2000 题,预估合计 ~10h,吞吐 ~450 tok/s 前提)。
-- 若要把 C-Eval 收敛到官方 ±1pp:换更大的 thinking 预算复跑全量(无合并),并确认 Qwen 官方 harness 的 prompt 模板与本评测是否一致。
+- Complete the full sampled runs of MMLU-Pro / SuperGPQA (2000 items each, ~10h total estimated at ~450 tok/s).
+- To converge C-Eval to within official ±1pp: rerun the full set with a larger thinking budget (no merge), and confirm whether the Qwen official harness prompt template matches this eval's.
