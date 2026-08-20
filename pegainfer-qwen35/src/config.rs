@@ -239,12 +239,14 @@ impl Config35 {
             .contains(&(self.num_attention_heads / self.num_key_value_heads))
     }
 
-    /// QKV projection output dimension for linear attention.
-    pub(crate) fn linear_attn_qkv_dim(&self) -> usize {
-        let q_dim = self.linear_num_key_heads * self.linear_key_head_dim;
-        let k_dim = q_dim;
-        let v_dim = self.linear_num_value_heads * self.linear_value_head_dim;
-        q_dim + k_dim + v_dim
+    /// TP-local decode GQA group supportability for the eager decode path:
+    /// whether the FlashInfer batch-decode kernel supports the rank-local
+    /// q-per-kv group. Deterministic per model and identical on every rank,
+    /// so both arms are collective-safe (the reroute adds no collectives).
+    /// At world_size 1 this equals `decode_group_is_compiled`.
+    pub(crate) fn local_decode_group_is_compiled(&self, tp: TensorParallelConfig) -> bool {
+        pegainfer_core::ops::SUPPORTED_GQA_GROUP_SIZES
+            .contains(&(self.local_num_attention_heads(tp) / self.local_num_key_value_heads(tp)))
     }
 
     /// Z projection output dimension for linear attention.
@@ -275,6 +277,44 @@ impl Config35 {
     /// Local gated full-attention q projection output dimension.
     pub(crate) fn local_full_attn_gated_q_dim(&self, tp: TensorParallelConfig) -> usize {
         self.local_full_attn_q_dim(tp) * 2
+    }
+
+    // ── Linear-attention local dims (Phase 2 TP sharding) ─────────────────
+    // TP1 contract: at world_size 1 every local dim equals the global dim, so
+    // all linear-attention kernels/buffers/state keep their pre-TP shapes.
+
+    pub(crate) fn local_linear_num_key_heads(&self, tp: TensorParallelConfig) -> usize {
+        self.linear_num_key_heads / tp.world_size
+    }
+
+    pub(crate) fn local_linear_num_value_heads(&self, tp: TensorParallelConfig) -> usize {
+        self.linear_num_value_heads / tp.world_size
+    }
+
+    /// Local q segment rows of the fused linear-attention qkv projection.
+    /// q is keyed by key heads (one key head per value-head group).
+    pub(crate) fn local_linear_q_dim(&self, tp: TensorParallelConfig) -> usize {
+        self.local_linear_num_key_heads(tp) * self.linear_key_head_dim
+    }
+
+    /// Local k segment rows of the fused linear-attention qkv projection.
+    pub(crate) fn local_linear_k_dim(&self, tp: TensorParallelConfig) -> usize {
+        self.local_linear_q_dim(tp)
+    }
+
+    /// Local v segment rows of the fused linear-attention qkv projection.
+    pub(crate) fn local_linear_v_dim(&self, tp: TensorParallelConfig) -> usize {
+        self.local_linear_num_value_heads(tp) * self.linear_value_head_dim
+    }
+
+    /// Local fused qkv rows: [q_local | k_local | v_local] in storage order.
+    pub(crate) fn local_linear_qkv_dim(&self, tp: TensorParallelConfig) -> usize {
+        self.local_linear_q_dim(tp) + self.local_linear_k_dim(tp) + self.local_linear_v_dim(tp)
+    }
+
+    /// Local z projection output dimension (equals local v dim).
+    pub(crate) fn local_linear_z_dim(&self, tp: TensorParallelConfig) -> usize {
+        self.local_linear_v_dim(tp)
     }
 }
 
@@ -314,6 +354,25 @@ impl TensorParallelConfig {
             return Err(anyhow::anyhow!(
                 "intermediate_size={} not divisible by tp world_size={}",
                 config.intermediate_size,
+                self.world_size
+            ));
+        }
+        // Phase 2b shards linear attention/GDR heads per rank; fail closed on
+        // indivisible head counts rather than falling back to replication.
+        if !config.linear_num_key_heads.is_multiple_of(self.world_size) {
+            return Err(anyhow::anyhow!(
+                "linear_num_key_heads={} not divisible by tp world_size={}",
+                config.linear_num_key_heads,
+                self.world_size
+            ));
+        }
+        if !config
+            .linear_num_value_heads
+            .is_multiple_of(self.world_size)
+        {
+            return Err(anyhow::anyhow!(
+                "linear_num_value_heads={} not divisible by tp world_size={}",
+                config.linear_num_value_heads,
                 self.world_size
             ));
         }
@@ -452,16 +511,56 @@ mod tp_tests {
     }
 
     #[test]
-    fn phase1_does_not_require_linear_attention_divisibility() {
+    fn tp_requires_linear_attention_head_divisibility() {
+        let tp = TensorParallelConfig {
+            rank: 0,
+            world_size: 2,
+        };
+
         let mut config = test_config();
         config.linear_num_key_heads = 17;
+        let err = tp.validate_for(&config, false).unwrap_err().to_string();
+        assert!(err.contains("linear_num_key_heads=17 not divisible"));
+
+        config.linear_num_key_heads = 16;
         config.linear_num_value_heads = 31;
+        let err = tp.validate_for(&config, false).unwrap_err().to_string();
+        assert!(err.contains("linear_num_value_heads=31 not divisible"));
+    }
+
+    #[test]
+    fn computes_tp2_linear_attention_local_dimensions() {
+        let config = test_config();
         let tp = TensorParallelConfig {
             rank: 1,
             world_size: 2,
         };
 
         tp.validate_for(&config, false).unwrap();
+        assert_eq!(config.local_linear_num_key_heads(tp), 8);
+        assert_eq!(config.local_linear_num_value_heads(tp), 16);
+        assert_eq!(config.local_linear_q_dim(tp), 1024);
+        assert_eq!(config.local_linear_k_dim(tp), 1024);
+        assert_eq!(config.local_linear_v_dim(tp), 2048);
+        assert_eq!(config.local_linear_qkv_dim(tp), 4096);
+        assert_eq!(config.local_linear_z_dim(tp), 2048);
+    }
+
+    #[test]
+    fn tp1_linear_attention_local_dimensions_equal_global() {
+        // TP1 invariant: every local dim equals the global dim, keeping TP1
+        // numerics byte-identical to pre-sharding execution.
+        let config = test_config();
+        let tp = TensorParallelConfig::default();
+
+        assert_eq!(config.local_linear_num_key_heads(tp), 16);
+        assert_eq!(config.local_linear_num_value_heads(tp), 32);
+        assert_eq!(config.local_linear_q_dim(tp), 2048);
+        assert_eq!(config.local_linear_k_dim(tp), 2048);
+        assert_eq!(config.local_linear_v_dim(tp), 4096);
+        // Global formula: 2 * 16 * 128 (q+k) + 32 * 128 (v) = 8192.
+        assert_eq!(config.local_linear_qkv_dim(tp), 8192);
+        assert_eq!(config.local_linear_z_dim(tp), config.linear_attn_z_dim());
     }
 }
 
