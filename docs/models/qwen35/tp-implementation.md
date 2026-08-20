@@ -545,7 +545,7 @@ slot-tracking deltas land there: the `ActiveBackendState::Tp` slot field
 and dispatch arms in `mod.rs`, `TpSchedulerBackend` slot compaction in
 `backend.rs`, and the decode-item/alignment helpers in `tp.rs`.
 
-Validation on 2× RTX 4090:
+Validation on 2× RTX 4090 (venv NCCL on `LD_LIBRARY_PATH`):
 
 - `cargo check --release -p pegainfer-qwen35 --features qwen35` clean;
   `cargo fmt --check -p pegainfer-qwen35` clean.
@@ -664,6 +664,8 @@ the *eager* test while the graph test ran concurrently.
   cross-harness band, no TP-induced accuracy regression. MMLU-Pro /
   SuperGPQA sampled runs remain outstanding; rerun on this rebased branch
   before citing parity.
+## Follow-Ups
+
 - P2B sharded linear-attention/GDR state landed (see "Rebase onto #870"); keep the completed P2A lifecycle and ID contracts unweakened.
 - Promote any stable contract changes discovered here back into `tp-design.md` through the design-doc branch.
 - Decide whether Qwen3.5 server CLI should accept arbitrary TP device ordinals instead of only `0..tp_size`.
