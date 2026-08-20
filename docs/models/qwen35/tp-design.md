@@ -1,6 +1,6 @@
 # Qwen3.5 Tensor Parallelism Design
 
-> **TL;DR:** Qwen3.5 TP Phase 2 is two separately delivered correctness milestones: P2a adds eager `RunUnifiedStep` with a shared ordered `RequestId` plan while retaining Phase 1 replicated GDR; P2b shards the head-indexed linear-attention/GDR surface and adds only the hidden all-reduce after local `out_proj`. P2c adds decode CUDA Graphs under TP, gated on the compiled decode GQA group (4B/9B TP2 capture; 27B group-6 stays eager).
+> **TL;DR:** Qwen3.5 tensor parallelism reuses Qwen3's controller/worker TP runtime and stays degree-parametric. Phases 1, 2a, 2b, and 2c are implemented (see `tp-implementation.md` for the landing record, including the rebase onto #870): eager dense TP, TP mixed-step unified execution, sharded linear-attention/GDR state, and decode CUDA Graphs under TP gated on the compiled decode GQA group (4B/9B TP2 capture; 27B group-6 stays eager). Remaining design work: group-6 batch-decode kernels so 27B TP2 can capture, and TP perf gates.
 >
 > **Last touched:** 2026-09
 
