@@ -1108,8 +1108,10 @@ mod tests {
         assert_eq!(qkv_view.shape(), [qkv_rows, cols]);
         let qkv_elems: Vec<f32> = qkv_view
             .data()
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect();
 
         // conv1d.weight fixture: [qkv * kernel_dim] flattened channels.
@@ -1118,8 +1120,10 @@ mod tests {
         let conv_view = conv.tensor("c").unwrap();
         let conv_elems: Vec<f32> = conv_view
             .data()
-            .chunks_exact(4)
-            .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|b| f32::from_le_bytes(*b))
             .collect();
 
         let global_q = config.linear_num_key_heads * config.linear_key_head_dim;
