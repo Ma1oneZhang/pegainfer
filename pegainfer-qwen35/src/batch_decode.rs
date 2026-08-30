@@ -296,7 +296,9 @@ impl Qwen35Model {
         // Route by TP-local GQA group supportability: when the rank-local
         // q-per-kv group has no compiled batch-decode kernel, run full
         // attention through the paged-prefill kernel with a per-step plan.
-        let prefill_attn_plan = if !self.geometry.local_decode_group_is_compiled() {
+        let prefill_attn_plan = if self.geometry.local_decode_group_is_compiled() {
+            None
+        } else {
             let page_indices: Vec<Vec<i32>> =
                 kv_states.iter().map(|kv| kv.page_indices_i32()).collect();
             let last_page_lens: Vec<usize> =
@@ -326,8 +328,6 @@ impl Qwen35Model {
                     )
                 })?,
             )
-        } else {
-            None
         };
 
         let kv_buffer = kv_states[0].buffer();
