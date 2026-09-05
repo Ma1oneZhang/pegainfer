@@ -436,10 +436,8 @@ impl Qwen35Model {
         Ok(projected)
     }
 
-    /// Phase 2b: every rank prefills only its local value heads against
-    /// rank-local (never all-reduced) recurrent/conv state; the col-sharded
-    /// out_proj yields a partial hidden sum that is all-reduced under TP
-    /// (no-op at world_size 1).
+    /// `out_proj` is column-sharded, so its partial hidden sum is the one
+    /// linear-attention output all-reduced under TP (no-op at world_size 1).
     fn prefill_linear_attention(
         &self,
         attn: &LinearAttentionLayer,

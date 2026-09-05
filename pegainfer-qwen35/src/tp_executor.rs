@@ -1,7 +1,7 @@
 //! Tensor-parallel worker runtime for Qwen3.5.
 //!
-//! Phase 2A adds one canonical eager unified command. Phase 2b shards the
-//! linear-attention/GDR weight and state surface per rank.
+//! One canonical eager unified command per step. Linear-attention/GDR weights
+//! and state are sharded per rank.
 
 use std::collections::HashSet;
 use std::panic::AssertUnwindSafe;
@@ -1037,8 +1037,8 @@ impl TpWorkerPrepared {
             .ctx
             .mem_get_info()
             .map_err(|err| anyhow::anyhow!("failed to query TP rank {rank} memory: {err}"))?;
-        // Phase 2b: per-request recurrent state is rank-local, so worker
-        // capacity math uses the local value-head/qkv sizes.
+        // Recurrent state is rank-local, so worker capacity math uses the
+        // local value-head/qkv sizes.
         let recurrent_bytes = RecurrentState::allocation_bytes(model.config(), model.geometry);
         let prefill_scratch_tokens = prefill_scratch_tokens(max_prefill_tokens);
         let prefill_scratch_bytes = GdrChunkwiseScratch35::estimate_bytes(

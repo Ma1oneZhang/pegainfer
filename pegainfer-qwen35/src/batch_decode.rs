@@ -271,7 +271,6 @@ impl Qwen35Model {
         linear_pointer_tables.validate_for(&self.config, bs, "Qwen3.5 eager decode")?;
 
         let mut positions = Vec::with_capacity(bs);
-        let mut start_positions = Vec::with_capacity(bs);
         for (i, kv) in kv_states.iter_mut().enumerate() {
             let pos = kv.seq_len();
             self.ensure_rope_cache_covers(pos + 1)?;
@@ -279,7 +278,6 @@ impl Qwen35Model {
             kv.advance(1);
             recurrent_states[i].seq_len += 1;
             positions.push(pos as i32);
-            start_positions.push(pos);
         }
 
         bufs.set_batch_size(bs);
@@ -293,41 +291,22 @@ impl Qwen35Model {
         let kv_refs: Vec<&KvState> = kv_states.iter().map(|s| &**s).collect();
         bufs.sync_paged_meta(&self.ctx, &kv_refs, bs)?;
 
-        // Route by TP-local GQA group supportability: when the rank-local
-        // q-per-kv group has no compiled batch-decode kernel, run full
+        // When this GQA group has no compiled batch-decode kernel, run full
         // attention through the paged-prefill kernel with a per-step plan.
-        let prefill_attn_plan = if self.geometry.local_decode_group_is_compiled() {
+        // Head sharding leaves the q-per-kv group size unchanged, so the
+        // config-level predicate decides the per-rank route identically on
+        // every rank; the reroute adds no collectives.
+        let prefill_attn_plan = if self.config.decode_group_is_compiled() {
             None
         } else {
-            let page_indices: Vec<Vec<i32>> =
-                kv_states.iter().map(|kv| kv.page_indices_i32()).collect();
-            let last_page_lens: Vec<usize> =
-                kv_states.iter().map(|kv| kv.last_page_len()).collect();
-            let seq_lens = vec![1usize; bs];
-            // cta_tile_q 0 = the kernel's own FA2 derivation; matches the
-            // hybrid fallback path in batch_decode_batched_hybrid.
-            Some(
-                ops::PrefillPagedPlan::from_raw_batch_with_cta_tile_q(
-                    &self.ctx,
-                    &page_indices,
-                    &last_page_lens,
-                    &start_positions,
-                    &seq_lens,
-                    self.geometry.local_num_attention_heads(),
-                    self.geometry.local_num_key_value_heads(),
-                    self.config.head_dim,
-                    0,
-                )
-                .with_context(|| {
-                    format!(
-                        "eager decode build PrefillPagedPlan bs={bs}, pages={}, local heads={}/{}, head_dim={}",
-                        page_indices.iter().map(Vec::len).sum::<usize>(),
-                        self.geometry.local_num_attention_heads(),
-                        self.geometry.local_num_key_value_heads(),
-                        self.config.head_dim
-                    )
-                })?,
-            )
+            let start_positions: Vec<usize> = positions.iter().map(|&p| p as usize).collect();
+            Some(self.one_token_paged_plan(
+                &kv_refs,
+                &start_positions,
+                self.geometry.local_num_attention_heads(),
+                self.geometry.local_num_key_value_heads(),
+                "eager decode",
+            )?)
         };
 
         let kv_buffer = kv_states[0].buffer();
@@ -494,31 +473,14 @@ impl Qwen35Model {
                 )
             })?;
 
-        let page_indices: Vec<Vec<i32>> =
-            kv_states.iter().map(|kv| kv.page_indices_i32()).collect();
-        let last_page_lens: Vec<usize> = kv_states.iter().map(|kv| kv.last_page_len()).collect();
-        let seq_lens = vec![1usize; bs];
-        // cta_tile_q 0 = the kernel's own FA2 derivation; the hd256 FFI takes no override.
-        let plan = ops::PrefillPagedPlan::from_raw_batch_with_cta_tile_q(
-            &self.ctx,
-            &page_indices,
-            &last_page_lens,
+        let kv_refs: Vec<&KvState> = kv_states.iter().map(|s| &**s).collect();
+        let plan = self.one_token_paged_plan(
+            &kv_refs,
             &start_positions,
-            &seq_lens,
             self.config.num_attention_heads,
             self.config.num_key_value_heads,
-            self.config.head_dim,
-            0,
-        )
-        .with_context(|| {
-            format!(
-                "hybrid decode build PrefillPagedPlan bs={bs}, pages={}, heads={}/{}, head_dim={}",
-                page_indices.iter().map(Vec::len).sum::<usize>(),
-                self.config.num_attention_heads,
-                self.config.num_key_value_heads,
-                self.config.head_dim
-            )
-        })?;
+            "hybrid decode",
+        )?;
 
         let kv_buffer = kv_states[0].buffer();
         let layout = *kv_states[0].layout();
@@ -540,6 +502,42 @@ impl Qwen35Model {
             &graph_state.linear_pointer_tables.conv_state_ptrs,
             bufs,
         )
+    }
+
+    /// Paged-prefill plan that runs one decode row per request through the
+    /// prefill attention kernel; used when the GQA group has no compiled
+    /// batch-decode kernel. `cta_tile_q` 0 = the kernel's own FA2 derivation;
+    /// the hd256 FFI takes no override.
+    fn one_token_paged_plan(
+        &self,
+        kv_refs: &[&KvState],
+        start_positions: &[usize],
+        num_q_heads: usize,
+        num_kv_heads: usize,
+        label: &str,
+    ) -> Result<ops::PrefillPagedPlan> {
+        let bs = kv_refs.len();
+        let page_indices: Vec<Vec<i32>> = kv_refs.iter().map(|kv| kv.page_indices_i32()).collect();
+        let last_page_lens: Vec<usize> = kv_refs.iter().map(|kv| kv.last_page_len()).collect();
+        let seq_lens = vec![1usize; bs];
+        ops::PrefillPagedPlan::from_raw_batch_with_cta_tile_q(
+            &self.ctx,
+            &page_indices,
+            &last_page_lens,
+            start_positions,
+            &seq_lens,
+            num_q_heads,
+            num_kv_heads,
+            self.config.head_dim,
+            0,
+        )
+        .with_context(|| {
+            format!(
+                "{label} build PrefillPagedPlan bs={bs}, pages={}, heads={num_q_heads}/{num_kv_heads}, head_dim={}",
+                page_indices.iter().map(Vec::len).sum::<usize>(),
+                self.config.head_dim
+            )
+        })
     }
 
     fn batch_decode_kernels_graph(
@@ -773,10 +771,8 @@ impl Qwen35Model {
     /// (real_bs..padded_bs) run but their output columns are ignored by the caller.
     /// All GPU addresses are stable per slot index, making this CUDA Graph safe.
     ///
-    /// Phase 2b: every rank computes only its local value heads against
-    /// rank-local (never all-reduced) recurrent/conv state; the col-sharded
-    /// out_proj yields a partial hidden sum that is all-reduced under TP
-    /// (no-op at world_size 1).
+    /// `out_proj` is column-sharded, so its partial hidden sum is the one
+    /// linear-attention output all-reduced under TP (no-op at world_size 1).
     fn batch_decode_linear_attention_slots(
         &self,
         attn: &LinearAttentionLayer,
