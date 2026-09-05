@@ -525,7 +525,7 @@ Implemented the locked P2c design from `tp-design.md`: decode CUDA Graphs
 under TP, gated on the TP-local decode GQA group.
 
 **Gate.** Graph mode is active iff `enable_cuda_graph &&
-config.local_decode_group_is_compiled(tp)`. The group ratio is TP-invariant,
+config.decode_group_is_compiled()`. The group ratio is TP-invariant,
 so 27B TP2 (group 6, not in `SUPPORTED_GQA_GROUP_SIZES`) keeps the batched
 eager path byte-for-byte while 4B/9B TP2 capture. The old fail-closed
 rejections (`config.rs` `validate_for`, `tp_executor.rs` startup ensure,
