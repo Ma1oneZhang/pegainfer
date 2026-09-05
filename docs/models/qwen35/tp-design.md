@@ -110,7 +110,7 @@ For any candidate `tp`, require:
 - `num_attention_heads % tp == 0`
 - `num_key_value_heads % tp == 0`
 - `intermediate_size % tp == 0`
-- Phase 2 additionally requires `linear_num_key_heads % tp == 0` and `linear_num_value_heads % tp == 0`
+- Phase 2 requires `linear_num_key_heads % tp == 0`; `linear_num_value_heads % tp == 0` then follows from the checkpoint invariant `linear_num_value_heads % linear_num_key_heads == 0`, so no second runtime guard
 
 Full attention local dimensions:
 
@@ -233,7 +233,7 @@ Lifecycle observability, cancellation ordering, fail-closed cleanup, and unified
 
 ## P2b: Local-Head Linear Attention / GDR
 
-P2b converts the 24 linear-attention layers from replicated execution to true TP execution. It additionally requires `linear_num_key_heads % tp == 0` and `linear_num_value_heads % tp == 0`; unsupported degrees and unsupported local kernel shapes fail before model loading.
+P2b converts the 24 linear-attention layers from replicated execution to true TP execution. It requires `linear_num_key_heads % tp == 0` (value-head divisibility follows from the checkpoint invariant `linear_num_value_heads % linear_num_key_heads == 0`); unsupported degrees and unsupported local kernel shapes fail before model loading.
 
 Shard every head-indexed linear-attention/GDR surface by the local key/value-head ranges:
 
