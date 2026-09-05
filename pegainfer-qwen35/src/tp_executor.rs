@@ -413,7 +413,7 @@ impl Qwen35TpExecutor {
         // so every rank decides identically; an uncompiled group (e.g. 27B's
         // group 6) keeps the batched eager path byte-for-byte.
         let geometry = first.geometry;
-        let graph_enabled = enable_cuda_graph && geometry.local_decode_group_is_compiled();
+        let graph_enabled = enable_cuda_graph && first.config().decode_group_is_compiled();
         if enable_cuda_graph && !graph_enabled {
             static LOG_GRAPH_GATE: std::sync::Once = std::sync::Once::new();
             LOG_GRAPH_GATE.call_once(|| {

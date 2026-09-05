@@ -100,7 +100,7 @@ impl LocalGeometry {
     ///   `TensorParallelConfig::try_from`.
     ///
     /// CUDA Graph under TP is gated at executor startup on
-    /// [`LocalGeometry::local_decode_group_is_compiled`] (P2c): uncompiled GQA
+    /// [`Config35::decode_group_is_compiled`] (P2c): uncompiled GQA
     /// groups keep the batched eager path instead of failing validation here.
     pub(crate) fn try_new(
         config: &Config35,

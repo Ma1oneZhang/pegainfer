@@ -272,12 +272,12 @@ Validation scope:
 ## P2c: CUDA Graph under TP
 
 Status: landed (2026-08-20) on `feat/qwen35-tp2-rebased`, gated on
-`local_decode_group_is_compiled` — 4B/9B TP2 capture and replay decode graphs;
+`Config35::decode_group_is_compiled` — 4B/9B TP2 capture and replay decode graphs;
 27B TP2 (group 6) stays on the batched eager path byte-for-byte until group-6
 batch-decode kernels are compiled. Execution record: `tp-implementation.md`
 section "P2c — CUDA Graph under TP".
 
-**Gate**: graph mode active iff `enable_cuda_graph && config.local_decode_group_is_compiled(tp)`. 27B TP2 is group-6 (`SUPPORTED_GQA_GROUP_SIZES = [1,2,3,4,8]`, group ratio is TP-invariant), so 27B TP2 keeps the batched eager path byte-for-byte until group-6 batch-decode kernels are compiled; 4B/9B TP2 capture graphs. Startup logs once when graph was requested but the group gate keeps decode eager.
+**Gate**: graph mode active iff `enable_cuda_graph && config.decode_group_is_compiled()`. 27B TP2 is group-6 (`SUPPORTED_GQA_GROUP_SIZES = [1,2,3,4,8]`, group ratio is TP-invariant), so 27B TP2 keeps the batched eager path byte-for-byte until group-6 batch-decode kernels are compiled; 4B/9B TP2 capture graphs. Startup logs once when graph was requested but the group gate keeps decode eager.
 
 **State model**: scheduler owns slot semantics (TP1 mirror); workers execute slot copies on command, never infer slots worker-side.
 
