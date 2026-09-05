@@ -4,8 +4,9 @@
 //! - Recurrent state: [local_value_heads, key_head_dim, value_head_dim] f32, V contiguous ([H,K,V])
 //! - Conv state: [local_qkv_dim × (conv_kernel_dim - 1)] bf16
 //!
-//! Under TP both are rank-local: Phase 2b shards value heads (and fused qkv
-//! channels) across ranks. Recurrent and conv state are NEVER all-reduced.
+//! Under TP, value heads (and fused qkv channels) are sharded across ranks,
+//! so every rank owns its own recurrent/conv state; these states are never
+//! all-reduced.
 
 use anyhow::Result;
 use cudarc::driver::CudaSlice;
@@ -19,11 +20,10 @@ use super::config::LocalGeometry;
 /// Per-layer recurrent state for a single linear attention layer.
 pub(crate) struct LayerRecurrentState {
     /// Recurrent state matrix: [local_value_heads * key_head_dim * value_head_dim] f32
-    /// Stored as f32 per mamba_ssm_dtype="float32" in config. Rank-local under
-    /// TP (local dims equal global dims at world_size 1). Never all-reduced.
+    /// Stored as f32 per mamba_ssm_dtype="float32" in config.
     pub(crate) state: CudaSlice<f32>,
     /// Conv1d state buffer: [local_linear_qkv_dim * (conv_kernel_dim - 1)] bf16
-    /// Stores the last (kernel_dim - 1) inputs for causal conv1d. Rank-local.
+    /// Stores the last (kernel_dim - 1) inputs for causal conv1d.
     pub(crate) conv_state: DeviceVec,
 }
 
@@ -47,8 +47,7 @@ pub(crate) struct LinearStatePointerTables {
 }
 
 /// Per-layer element counts shared by allocation and reservation:
-/// (linear layers, f32 state elements, bf16 conv elements). Sizes are
-/// rank-local under TP; at world_size 1 they equal the global dims.
+/// (linear layers, f32 state elements, bf16 conv elements).
 fn per_layer_dims(config: &Config35, geometry: LocalGeometry) -> (usize, usize, usize) {
     let num_linear_layers = config.num_hidden_layers - config.num_full_attention_layers();
     let state_size = geometry.local_linear_num_value_heads()
@@ -155,7 +154,7 @@ impl LinearStatePointerTables {
     }
 }
 
-/// Device bytes of one request's (rank-local) recurrent state.
+/// Device bytes of one request's recurrent state.
 pub(crate) fn bytes_per_request(config: &Config35, geometry: LocalGeometry) -> usize {
     let (num_linear_layers, state_size, conv_state_size) = per_layer_dims(config, geometry);
     num_linear_layers

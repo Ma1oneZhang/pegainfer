@@ -57,8 +57,7 @@ impl GdrChunkwiseScratch35 {
         geometry: LocalGeometry,
         seq_len: usize,
     ) -> Result<Self> {
-        // GDR scratch is rank-local under TP: local value heads, global dims
-        // at world_size 1.
+        // GDR scratch sizes follow the rank's local value-head geometry.
         Self::from_dims(
             ctx,
             geometry.local_linear_num_value_heads(),
