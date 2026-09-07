@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from eval_mc import (first_capital, mmlupro_extract, MMLUREDUX_RE,
+from eval_mc import (first_capital, mmlupro_extract,
                      sg_extract_labels, sg_extract_content, STOP_MAP)
 import httpx
 
@@ -26,8 +26,9 @@ def extract(bench, item, text):
     if bench == 'mmlu_pro':
         return mmlupro_extract(text).lower()
     if bench == 'mmlu_redux':
-        m = MMLUREDUX_RE.search(text)
-        return m.group(1) if m else ''
+        # Same marker-aware extractor as eval_mc.py: a first-anywhere [ABCD]
+        # search scores the "A" of "Answer".
+        return sg_extract_labels(text, 'ABCD') or ''
     pred = sg_extract_labels(text)
     if pred is None and item.get('options'):
         content = sg_extract_content(text, item['options'])

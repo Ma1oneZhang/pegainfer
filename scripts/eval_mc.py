@@ -259,9 +259,12 @@ async def evaluate(name, items, prompts, golds, args, out_dir):
             fails += 1
         extra = {'subject': items[i].get('subject')}
         if name == 'supergpqa':
+            # Keep the option texts: eval_rerun_truncated.py falls back to
+            # content matching when a rerun answer names an option, not a letter.
             extra.update({'discipline': items[i].get('discipline'),
                           'field': items[i].get('field'),
-                          'difficulty': items[i].get('difficulty')})
+                          'difficulty': items[i].get('difficulty'),
+                          'options': items[i].get('options')})
         records.append({
             'idx': i, 'prompt': prompts[i], 'reasoning': out['reasoning'],
             'output': text, 'gold': golds[i], 'pred': pred, 'correct': correct,
