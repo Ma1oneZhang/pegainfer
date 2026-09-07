@@ -2124,9 +2124,13 @@ impl TpWorkerState {
         }
     }
 
-    /// Capture or launch one bucket with synthetic rows: token 0 at position 0
-    /// over freshly allocated one-page KV states. Outputs are discarded; the
-    /// rows exist only to give the recorded kernels valid addresses.
+    /// Capture or launch one bucket with synthetic rows. Outputs are
+    /// discarded; the rows exist only to give the recorded kernels valid
+    /// addresses. One real row (token 0 at position 0 over a freshly
+    /// allocated one-page KV state) selects nothing — the bucket is passed
+    /// explicitly — and every other row is padding on the pool's reserved
+    /// padding page, exactly as when serving. The sweep therefore holds one
+    /// KV page at a time regardless of pool size or bucket.
     fn precapture_bucket(&mut self, bucket_idx: usize, graph_use: DecodeGraphUse) -> Result<()> {
         let bucket = BATCH_BUCKETS[bucket_idx];
         let graph_state = self.graph_state.as_mut().ok_or_else(|| {
@@ -2137,11 +2141,15 @@ impl TpWorkerState {
             "Qwen3.5 TP pre-capture bucket {bucket} exceeds {} slots",
             graph_state.slot_states.len()
         );
-        let mut synthetic_kv: Vec<KvState> = (0..bucket).map(|_| self.model.alloc_kv()).collect();
-        let mut kv_refs: Vec<&mut KvState> = synthetic_kv.iter_mut().collect();
-        let token_ids = vec![0u32; bucket];
-        self.model
-            .batch_decode_graph(&token_ids, &mut kv_refs, graph_state, graph_use)?;
+        let mut synthetic_kv = self.model.alloc_kv();
+        let mut kv_refs = [&mut synthetic_kv];
+        self.model.batch_decode_graph_padded(
+            &[0u32],
+            &mut kv_refs,
+            graph_state,
+            graph_use,
+            bucket,
+        )?;
         // Capture acks only after the async cuGraphUpload lands; Launch acks
         // only after the collectives drained.
         self.model

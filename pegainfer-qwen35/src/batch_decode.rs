@@ -358,6 +358,24 @@ impl Qwen35Model {
         graph_state: &mut BatchDecodeGraphState,
         graph_use: DecodeGraphUse,
     ) -> Result<()> {
+        let padded_bs = bucket_for(token_ids.len());
+        self.batch_decode_graph_padded(token_ids, kv_states, graph_state, graph_use, padded_bs)
+    }
+
+    /// `batch_decode_graph` with the bucket chosen by the caller instead of
+    /// derived from `bs`. Rows `bs..padded_bs` are padding either way — they
+    /// ride the pool's reserved padding page and a free recurrent slot — so a
+    /// caller that only needs a *bucket* (the TP pre-capture sweep) can pass
+    /// one real row and still capture or launch the bucket-`padded_bs` graph
+    /// without holding `padded_bs` KV pages.
+    pub(crate) fn batch_decode_graph_padded(
+        &self,
+        token_ids: &[u32],
+        kv_states: &mut [&mut KvState],
+        graph_state: &mut BatchDecodeGraphState,
+        graph_use: DecodeGraphUse,
+        padded_bs: usize,
+    ) -> Result<()> {
         let bs = token_ids.len();
         anyhow::ensure!(bs > 0, "batch_decode_graph requires at least one request");
         anyhow::ensure!(bs == kv_states.len(), "token_ids / kv_states len mismatch");
@@ -365,6 +383,10 @@ impl Qwen35Model {
             bs <= graph_state.slot_states.len(),
             "batch size {bs} exceeds decode capacity {}",
             graph_state.slot_states.len()
+        );
+        anyhow::ensure!(
+            padded_bs >= bs && BATCH_BUCKETS.contains(&padded_bs),
+            "padded batch {padded_bs} is not a decode bucket covering bs={bs}"
         );
 
         if !self.config.decode_group_is_compiled() {
@@ -386,7 +408,6 @@ impl Qwen35Model {
             return self.batch_decode_batched_hybrid(token_ids, kv_states, graph_state);
         }
 
-        let padded_bs = bucket_for(bs);
         graph_state.linear_pointer_tables.validate_for(
             &self.config,
             padded_bs,
