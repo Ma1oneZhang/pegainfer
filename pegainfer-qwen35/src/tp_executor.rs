@@ -987,6 +987,9 @@ struct TpWorkerState {
     model: Qwen35Model,
     requests: Vec<TpRequestState>,
     decode_buffers: BatchDecodeBuffers35,
+    /// Eager decode GDR pointer tables: allocated once at capacity, refilled
+    /// with the live rows every step.
+    decode_pointer_tables: LinearStatePointerTables,
     sample_scratch: pegainfer_sample::SampleScratch,
     _cublas_guard: CublasThreadGuard,
     poison: Arc<TpRuntimePoison>,
@@ -1118,6 +1121,12 @@ impl TpWorkerPrepared {
         )
         .map_err(|e| anyhow::anyhow!("failed to initialize Qwen3.5 TP NCCL rank {rank}: {e:?}"))?;
         model.attach_tp_comm(comm);
+        let decode_pointer_tables = LinearStatePointerTables::with_capacity(
+            model.device_ctx(),
+            model.config(),
+            effective_max_batch,
+            "Qwen3.5 TP eager decode",
+        )?;
         Ok(TpWorkerState {
             rank,
             _world_size: world_size,
@@ -1125,6 +1134,7 @@ impl TpWorkerPrepared {
             model,
             requests: Vec::new(),
             decode_buffers,
+            decode_pointer_tables,
             sample_scratch,
             _cublas_guard: cublas_guard,
             poison,
@@ -1398,12 +1408,12 @@ impl TpWorkerState {
             recurrent_refs.push(recurrent.expect("decode row state resolved above"));
         }
 
-        // Step-scoped GDR pointer tables over the full decode batch. They are
-        // rebuilt every step, so swap_remove retirement between steps can
-        // never leave a stale table behind.
-        let linear_pointer_tables = LinearStatePointerTables::from_recurrent_refs(
+        // GDR pointer tables over the full decode batch: allocated once at
+        // capacity, refilled from the live rows every step (H2D only), so
+        // swap_remove retirement between steps can never leave a stale row
+        // addressed and no step pays for device allocations.
+        self.decode_pointer_tables.refill_from_recurrent_refs(
             self.model.device_ctx(),
-            self.model.config(),
             &mut recurrent_refs,
             bs,
             "Qwen3.5 TP eager decode",
@@ -1413,7 +1423,7 @@ impl TpWorkerState {
             &token_ids,
             &mut kv_refs,
             &mut recurrent_refs,
-            &linear_pointer_tables,
+            &self.decode_pointer_tables,
             &mut self.decode_buffers,
         )?;
 
