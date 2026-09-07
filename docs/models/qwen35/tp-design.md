@@ -1,8 +1,8 @@
 # Qwen3.5 Tensor Parallelism Design
 
-> **TL;DR:** Qwen3.5 TP Phase 2 is two separately delivered correctness milestones: P2a adds eager `RunUnifiedStep` with a shared ordered `RequestId` plan while retaining Phase 1 replicated GDR; P2b shards the head-indexed linear-attention/GDR surface and adds only the hidden all-reduce after local `out_proj`.
+> **TL;DR:** Qwen3.5 TP Phase 2 is two separately delivered correctness milestones: P2a adds eager `RunUnifiedStep` with a shared ordered `RequestId` plan while retaining Phase 1 replicated GDR; P2b shards the head-indexed linear-attention/GDR surface and adds only the hidden all-reduce after local `out_proj`. P2c adds decode CUDA Graphs under TP, gated on the compiled decode GQA group (4B/9B TP2 capture; 27B group-6 stays eager).
 >
-> **Last touched:** 2026-08
+> **Last touched:** 2026-09
 
 ## Goal
 
@@ -271,11 +271,11 @@ Validation scope:
 
 ## P2c: CUDA Graph under TP
 
-Status: landed (2026-08-20) on `feat/qwen35-tp2-rebased`, gated on
-`Config35::decode_group_is_compiled` — 4B/9B TP2 capture and replay decode graphs;
-27B TP2 (group 6) stays on the batched eager path byte-for-byte until group-6
-batch-decode kernels are compiled. Execution record: `tp-implementation.md`
-section "P2c — CUDA Graph under TP".
+Landed 2026-08-20 (#1005), gated on `Config35::decode_group_is_compiled`:
+4B/9B TP2 capture and replay decode graphs; 27B TP2 (group 6) stays on the
+batched eager path byte-for-byte until group-6 batch-decode kernels are
+compiled. Execution record: `tp-implementation.md`, section "P2c — CUDA Graph
+under TP".
 
 **Gate**: graph mode active iff `enable_cuda_graph && config.decode_group_is_compiled()`. 27B TP2 is group-6 (`SUPPORTED_GQA_GROUP_SIZES = [1,2,3,4,8]`, group ratio is TP-invariant), so 27B TP2 keeps the batched eager path byte-for-byte until group-6 batch-decode kernels are compiled; 4B/9B TP2 capture graphs. Startup logs once when graph was requested but the group gate keeps decode eager.
 

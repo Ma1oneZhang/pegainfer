@@ -629,7 +629,8 @@ retired request was the last slot — use `then` for the lazy closure.
 - 27B TP2 HF short+long and scheduler e2e PASS unchanged — the gate log
   confirms group 6 keeps decode eager (the graph test variant skips itself
   via `graph_enabled()`).
-- 9B TP2 serving benchmark (`pegainfer-server --tp-size 2 --port 18093`,
+- **Historical, not re-measured on this stack:** 9B TP2 serving benchmark
+  from the pre-rebase #946 branch (2026-08-20; `pegainfer-server --tp-size 2 --port 18093`,
   vllm-bench `openai` backend, random 128-in/256-out, 64 prompts at
   concurrency 16, greedy, ignore_eos, seed 42):
 
@@ -638,7 +639,9 @@ retired request was the last slot — use `then` for the lazy closure.
   | CUDA Graph on  | 767.15 | 20.04 | 1146.65 |
   | CUDA Graph off | 705.86 | 21.99 | 1054.56 |
 
-  Graph decode is +8.7% steady output tok/s (-8.8% TPOT) at 16 concurrent.
+  On that branch graph decode measured +8.7% steady output tok/s (-8.8% TPOT)
+  at 16 concurrent. No performance claim is made for this stack until the
+  same-context A/B is rerun on it (tracked in #1001).
   The design's "record in `bench_snapshots/`" step was skipped: the
   in-process snapshot gate is retired (`docs/conventions/bench-regression.md`),
   so the HTTP bench numbers live here instead.
