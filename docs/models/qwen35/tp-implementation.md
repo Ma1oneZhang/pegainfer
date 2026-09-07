@@ -513,8 +513,9 @@ ported only the two deltas #870 lacks, with #870's code as the base:
    `feat(qwen35): shard linear-attention/GDR state per TP rank`). #870's
    `recurrent_state.rs` had no rank sharding and its linear-attention
    weights loaded replicated; the port adds rank-local slices end to end
-   (`weight_loader` stitch/shard loaders, `config.rs` `local_linear_*`
-   accessors, `weights.rs` per-rank stitched qkv/conv1d + row/col shards,
+   (`weight_loader` stitch/shard loaders, `config/tp.rs` `local_linear_*`
+   accessors, `weights/layers.rs` per-rank stitched qkv/conv1d + row/col
+   shards carried on `WeightSource`,
    `recurrent_state`/`decode_buffers`/`prefill_buffers` at local sizes,
    `batch_decode`/`prefill` local head counts + all-reduce after linear
    `out_proj`, TP-local `batch_decode_full_attention_via_prefill` so 27B
@@ -535,10 +536,14 @@ ported only the two deltas #870 lacks, with #870's code as the base:
 What #870 already covered (not ported): Phase 1 dense TP, the Phase 2a
 unified command/scheduler surface (`TpUnifiedPlan`, command start gates,
 dispatch/response validators, drop-expectation lifecycle proofs), and the
-scheduler planner-gate/test updates — ours' `scheduler.rs`,
+scheduler planner-gate/test updates — ours' scheduler,
 `scheduler/tests.rs`, and `e2e_scheduler.rs` deltas were subsumed
 upstream, so those files resolved to #870's versions except the
-`alloc_recurrent` signature change.
+`alloc_recurrent` signature change. #967/#968 have since split the
+scheduler into `scheduler/{mod,backend,plan,tp}.rs`, so this branch's
+slot-tracking deltas land there: the `ActiveBackendState::Tp` slot field
+and dispatch arms in `mod.rs`, `TpSchedulerBackend` slot compaction in
+`backend.rs`, and the decode-item/alignment helpers in `tp.rs`.
 
 Validation on 2× RTX 4090:
 
