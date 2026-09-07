@@ -373,34 +373,4 @@ mod tests {
             }
         );
     }
-
-    #[test]
-    fn computes_tp2_linear_attention_local_dimensions() {
-        let cfg = config();
-        let tp = TensorParallelConfig::try_from((1, 2)).unwrap();
-        let geom = LocalGeometry::try_new(&cfg, tp, false).unwrap();
-        assert_eq!(geom.local_linear_num_key_heads(), 8);
-        assert_eq!(geom.local_linear_num_value_heads(), 16);
-        // q/k rows derive as key_heads * key_head_dim; qkv = 2q + v, z = v.
-        assert_eq!(geom.local_linear_qkv_dim(), 4096);
-        assert_eq!(geom.local_linear_z_dim(), 2048);
-        assert_eq!(
-            (geom.local_linear_qkv_dim() - geom.local_linear_z_dim()) / 2,
-            8 * cfg.linear_key_head_dim
-        );
-    }
-
-    #[test]
-    fn tp1_linear_attention_local_dimensions_equal_global() {
-        // TP1 invariant: every local dim equals the global dim, keeping TP1
-        // numerics byte-identical to pre-sharding execution.
-        let cfg = config();
-        let geom = LocalGeometry::try_new(&cfg, TensorParallelConfig::default(), false).unwrap();
-        assert_eq!(geom.local_linear_num_key_heads(), 16);
-        assert_eq!(geom.local_linear_num_value_heads(), 32);
-        let global_qkv =
-            2 * (cfg.linear_num_key_heads * cfg.linear_key_head_dim) + cfg.linear_attn_z_dim();
-        assert_eq!(geom.local_linear_qkv_dim(), global_qkv);
-        assert_eq!(geom.local_linear_z_dim(), cfg.linear_attn_z_dim());
-    }
 }

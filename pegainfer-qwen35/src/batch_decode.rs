@@ -477,8 +477,8 @@ impl Qwen35Model {
         let plan = self.one_token_paged_plan(
             &kv_refs,
             &start_positions,
-            self.config.num_attention_heads,
-            self.config.num_key_value_heads,
+            self.geometry.local_num_attention_heads(),
+            self.geometry.local_num_key_value_heads(),
             "hybrid decode",
         )?;
 
