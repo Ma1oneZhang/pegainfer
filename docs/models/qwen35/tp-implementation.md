@@ -458,7 +458,7 @@ Non-negotiable invariant (still held):
 
 - Never all-reduce GDR recurrent state or conv state. These states are owned by rank-local request state.
 
-Acceptance at `fcdeb5a4` (27B TP2 on 2x RTX 4090 48GB, sm_89; fixture-pinned 27B revision `fc05daec`):
+Acceptance on the #1003 branch before its final rebase (27B TP2 on 2x RTX 4090 48GB, sm_89; fixture-pinned 27B revision `fc05daec`):
 
 - TP2 short HF logits gate passes:
   - sequential eager: `108` positions, mean `0.0210`, p99 `0.0749`, max `0.1240`
@@ -469,7 +469,7 @@ Acceptance at `fcdeb5a4` (27B TP2 on 2x RTX 4090 48GB, sm_89; fixture-pinned 27B
 
 Not in this step: batching the TP decode loop across rows, TP CUDA Graph capture, and the matched Phase-1-vs-P2b HBM/latency/throughput A/B promised in #1001; no performance claim is made until that rerun lands on the merged stack.
 
-### Step 3: batched eager TP decode
+### Batched eager TP decode (#1004)
 
 Landed as #946 split 2/4 (#1004). #870's `execute_decode_rows` looped per
 request with bs=1 forwards and capacity-1 per-request pointer tables.
@@ -527,9 +527,9 @@ ported only the two deltas #870 lacks, with #870's code as the base:
    `execute_decode_rows` looped per request with bs=1 forwards and
    capacity-1 per-request pointer tables. The port adds `run_decode_batch`
    (one `batch_decode_eager_logits` over all decode rows, one persistent
-   `LinearStatePointerTables` per worker refilled each step — see Step 3
-   above — one batched rank-0 `select_batch`, per-row fan-out in command
-   order) inside
+   `LinearStatePointerTables` per worker refilled each step — see the
+   batched eager TP decode (#1004) section above — one batched rank-0
+   `select_batch`, per-row fan-out in command order) inside
    #870's `execute_decode_rows`, keeping its validation and response
    contracts; `TpRequestState.linear_pointer_tables` removed.
 
@@ -657,15 +657,6 @@ the *eager* test while the graph test ran concurrently.
   TP2 graphs stay gated off until group-6 batch-decode kernels are compiled
   (`SUPPORTED_GQA_GROUP_SIZES`). The eager path is the 27B fallback and must
   not regress.
-- 27B TP2 knowledge-benchmark parity (2026-08-20, validated pre-rebase on
-  the parallel TP line; `docs/benchmarks/qwen35-27b-tp2-knowledge-eval.md`):
-  MMLU-Redux 94.09 vs official 93.2 (full 5330), C-Eval 88.11 vs 90.5
-  (full 1346, thinking-cap truncation rerun-merged) — inside the
-  cross-harness band, no TP-induced accuracy regression. MMLU-Pro /
-  SuperGPQA sampled runs remain outstanding; rerun on this rebased branch
-  before citing parity.
-## Follow-Ups
-
 - 27B TP2 knowledge-benchmark parity (2026-08-20, validated pre-rebase on
   the f4c66780 line; `docs/benchmarks/qwen35-27b-tp2-knowledge-eval.md`):
   MMLU-Redux 94.09 vs official 93.2 (full 5330), C-Eval 88.11 vs 90.5
