@@ -152,7 +152,7 @@ def sg_extract_content(text, options_content):
     alt = '|'.join(esc)
     pats = [
         rf'[Tt]he\s+(?:\w+\s+)?(?:answer|option)(?:\w+\s+)?\s+is:?\s*(?:[\*\$\\{{\(\[\\]*?(?:(?:\\boxed|\\mathbf|\\mathrm|\\text){{)?)*\s*({alt})(?:\\?\}}?\$?\)?\]?\}}?)*(?:[\s:\.\*)]|$)',
-        rf'(?i:Answer)\s*(?:[\*\$\\{{\(\[\\]*?(?:(?:\\boxed|\\mathbf|\\mathrm|\\text){{)?)*\s*({alt})(?:\\?\}}?\$?\)?\]?\}}?)*(?:[\s:\.\*)]|$)',
+        rf'(?i:Answer)\s*:?\s*(?:[\*\$\\{{\(\[\\]*?(?:(?:\\boxed|\\mathbf|\\mathrm|\\text){{)?)*\s*({alt})(?:\\?\}}?\$?\)?\]?\}}?)*(?:[\s:\.\*)]|$)',
         rf'^[^\w\r\n]*(?:[\*\$\\{{\(\[\\]*?(?:(?:\\boxed|\\mathbf|\\mathrm|\\text){{)?)*\s*({alt})(?:\\?\}}?\$?\)?\]?\}}?)*(?:[\s:\.\*)]|$)',
     ]
     text = text.rstrip()
@@ -384,7 +384,7 @@ def main():
                 picked.extend(sorted(group[:take]))
             indices = sorted(picked)
             print(f'strata: {len(strata)}, picked {len(indices)} of {len(items)}', flush=True)
-        else:
+        elif args.limit:
             indices = indices[:args.limit]
         items = [items[i] for i in indices]
         prompts = [prompts[i] for i in indices]

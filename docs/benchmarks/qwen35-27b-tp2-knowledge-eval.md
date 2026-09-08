@@ -1,6 +1,6 @@
 # Qwen3.5-27B TP2 知识基准评测(官方分对比)
 
-> TL;DR:Qwen3.5-27B 在 pegainfer TP2(2× RTX 4090,batched eager decode)上跑知识基准,C-Eval 88.11(官方 90.5)、MMLU-Redux 94.09(官方 93.2),均在跨 harness 正常带内;MMLU-Pro / SuperGPQA 因运行时长原因仅完成抽样冒烟,未出最终分(见下文)。模型数值无 TP 引入的精度问题。
+> TL;DR:Qwen3.5-27B 在 pegainfer TP2(2× RTX 4090,batched eager decode)上跑知识基准,C-Eval 88.11(官方 90.5)在跨 harness 正常带内;MMLU-Redux 94.09(官方 93.2)由修复前的抽取器打分,**复跑待定,勿引用**;MMLU-Pro / SuperGPQA 因运行时长原因仅完成抽样冒烟,未出最终分(见下文)。C-Eval 数值加上两侧全绿的 HF logits golden gate,未见 TP 引入的精度问题。
 >
 > 注:分数实测于 rebase 前的 f4c66780 分支(自研 Phase 1/2a 线);rebase 到 #870 后 logits golden gate 两侧一致通过,数值可迁移,但若正式引用请在本 PR 分支上复跑确认。
 >
@@ -31,7 +31,7 @@
 ## 关键观察
 
 - **没有 TP 精度问题**:27B TP2 HF logits golden gate 全绿;C-Eval 非截断子集(1290/1346)准确率 90.2% ≈ 官方 90.5。C-Eval 的差距全部来自 thinking 长度上限被掐断的最难题,而非模型错算。
-- **MMLU-Redux 略高于官方**(+0.9pp):同带,说明 prompt/抽取/数值链路都对。
+- **MMLU-Redux 略高于官方**(+0.9pp):复跑待定——该分由修复前的首个大写字母抽取器打出,修复后需以 `scripts/eval_mc.py` 重测确认,现阶段不作为带内证据引用。
 - **thinking 长度是最大的系统变量**:thinking 模型在 C-Eval 上 ~4% 题需要 >8192 token,MMLU-Pro 上 >1/3 题在 4096 内收不住。官方 harness 的 max_tokens 未知(推测 ≥32k);本评测用 8192 首轮 + 32768 重跑合并来逼近。跨 harness ±1–2pp 属正常。
 - **吞吐前置条件**:此评测可行完全依赖 Step 3 的 batched eager TP decode 修复(此前 16 并发聚合仅 ~25 tok/s,全量不可行;修复后 ~450 tok/s @48 并发)。
 
