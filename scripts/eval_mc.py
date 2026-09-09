@@ -172,7 +172,58 @@ def sg_extract_content(text, options_content):
 
 
 # ---------------------------------------------------------------- runner
-STOP_MAP = {'mmlu_pro': ['Question:']}
+# No generation-time stop strings: this stack matches stop text against the
+# raw decoded stream before reasoning/final separation, so a marker like
+# "Question:" that reappears inside a thinking block ends the generation
+# before the final answer exists (see eval_gsm8k_thinking.py). If a stop is
+# ever needed, use "<|im_end|>" only.
+STOP_MAP: dict[str, list[str]] = {}
+
+
+def make_record(name, idx, item, prompt, gold, out):
+    """Score one raw response into a per-sample record.
+
+    Returns (record, correct, truncated_thinking, api_error).
+    """
+    text = out['content']
+    truncated = bool(
+        not text and out['reasoning'] and not out['reasoning'].startswith('__ERROR__'))
+    if name == 'ceval':
+        pred = first_capital(text)
+    elif name == 'mmlu_pro':
+        pred = mmlupro_extract(text).lower()
+    elif name == 'mmlu_redux':
+        pred = sg_extract_labels(text, 'ABCD') or ''
+    else:
+        pred = sg_extract_labels(text)
+        if pred is None:
+            content = sg_extract_content(text, item['options'])
+            if content is not None:
+                try:
+                    pred = chr(item['options'].index(content) + 65)
+                except ValueError:
+                    pred = None
+        if pred is None:
+            pred = ''
+    correct = pred.lower() == gold.lower()
+    failed = out['reasoning'].startswith('__ERROR__')
+    extra = {'subject': item.get('subject')}
+    if name == 'supergpqa':
+        # Keep the option texts: eval_rerun_truncated.py falls back to
+        # content matching when a rerun answer names an option, not a letter.
+        extra.update({'discipline': item.get('discipline'),
+                      'field': item.get('field'),
+                      'difficulty': item.get('difficulty'),
+                      'options': item.get('options')})
+    record = {
+        'idx': idx,
+        'prompt': prompt, 'reasoning': out['reasoning'],
+        'output': text, 'gold': gold, 'pred': pred, 'correct': correct,
+        'completion_tokens': out.get('completion_tokens', 0),
+        'finish_reason': out.get('finish_reason', ''),
+        **extra,
+    }
+    return record, correct, truncated, failed
 
 
 async def run_completion(client, base_url, model, prompt, max_tokens, temperature, name):
@@ -208,78 +259,46 @@ async def run_completion(client, base_url, model, prompt, max_tokens, temperatur
 
 
 async def evaluate(name, items, prompts, golds, args, out_dir):
-    sem = asyncio.Semaphore(args.concurrency)
-    limits = httpx.Limits(max_connections=args.concurrency)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(args.timeout), limits=limits) as client:
-        async def one(i, prompt):
-            async with sem:
-                t0 = time.time()
-                out = await run_completion(client, args.base_url, args.model,
-                                           prompt, args.max_tokens, args.temperature, name)
-                return i, out, round(time.time() - t0, 2)
-
-        t0 = time.time()
-        results = {}
-        tasks = [one(i, p) for i, p in enumerate(prompts)]
-        done = 0
-        for fut in asyncio.as_completed(tasks):
-            i, out, dt = await fut
-            results[i] = out
-            done += 1
-            if done % 200 == 0 or done == len(prompts):
-                print(f'[{name}] {done}/{len(prompts)} '
-                      f'({(time.time() - t0) / 60:.1f} min)', flush=True)
-
-    preds, fails, trunc = [], 0, 0
-    records = []
-    for i in range(len(prompts)):
-        out = results[i]
-        text = out['content']
-        if not text and out['reasoning'] and not out['reasoning'].startswith('__ERROR__'):
-            trunc += 1  # hit max_tokens mid-thinking; no final answer produced
-        if name == 'ceval':
-            pred = first_capital(text)
-        elif name == 'mmlu_pro':
-            pred = mmlupro_extract(text).lower()
-        elif name == 'mmlu_redux':
-            pred = sg_extract_labels(text, 'ABCD') or ''
-        else:
-            pred = sg_extract_labels(text)
-            if pred is None:
-                content = sg_extract_content(text, items[i]['options'])
-                if content is not None:
-                    try:
-                        pred = chr(items[i]['options'].index(content) + 65)
-                    except ValueError:
-                        pred = None
-            if pred is None:
-                pred = ''
-        correct = pred.lower() == golds[i].lower()
-        if out['reasoning'].startswith('__ERROR__'):
-            fails += 1
-        extra = {'subject': items[i].get('subject')}
-        if name == 'supergpqa':
-            # Keep the option texts: eval_rerun_truncated.py falls back to
-            # content matching when a rerun answer names an option, not a letter.
-            extra.update({'discipline': items[i].get('discipline'),
-                          'field': items[i].get('field'),
-                          'difficulty': items[i].get('difficulty'),
-                          'options': items[i].get('options')})
-        records.append({
-            'idx': i, 'prompt': prompts[i], 'reasoning': out['reasoning'],
-            'output': text, 'gold': golds[i], 'pred': pred, 'correct': correct,
-            'completion_tokens': out.get('completion_tokens', 0),
-            'finish_reason': out.get('finish_reason', ''),
-            **extra,
-        })
-        preds.append(correct)
-    acc = sum(preds) / max(len(preds), 1)
-    wall_min = (time.time() - t0) / 60.0
-    tot_completion = sum(results[i].get('completion_tokens', 0) for i in results)
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
+    # Persist every sample as it completes, so a killed/crashed run keeps what
+    # it already paid for; the canonical pretty file is written at the end.
+    partial_path = out_path / f'{name}_samples.partial.jsonl'
+    sem = asyncio.Semaphore(args.concurrency)
+    limits = httpx.Limits(max_connections=args.concurrency)
+    records = []
+    n_correct, fails, trunc = 0, 0, 0
+    t0 = time.time()
+    with partial_path.open('w', encoding='utf-8') as partial:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(args.timeout), limits=limits) as client:
+            async def one(i, prompt):
+                async with sem:
+                    out = await run_completion(client, args.base_url, args.model,
+                                               prompt, args.max_tokens, args.temperature, name)
+                    rec, ok, cut, err = make_record(name, i, items[i], prompts[i], golds[i], out)
+                    return rec, ok, cut, err
+
+            tasks = [one(i, p) for i, p in enumerate(prompts)]
+            done = 0
+            for fut in asyncio.as_completed(tasks):
+                rec, ok, cut, err = await fut
+                records.append(rec)
+                partial.write(json.dumps(rec, ensure_ascii=False) + '\n')
+                partial.flush()
+                n_correct += ok
+                fails += err
+                trunc += cut
+                done += 1
+                if done % 200 == 0 or done == len(prompts):
+                    print(f'[{name}] {done}/{len(prompts)} '
+                          f'({(time.time() - t0) / 60:.1f} min)', flush=True)
+
+    records.sort(key=lambda r: r['idx'])
+    acc = n_correct / max(len(records), 1)
+    wall_min = (time.time() - t0) / 60.0
+    tot_completion = sum(r.get('completion_tokens', 0) for r in records)
     (out_path / f'{name}_samples.json').write_text(json.dumps(records, ensure_ascii=False, indent=1))
-    summary = {'benchmark': name, 'model': args.model, 'n': len(preds),
+    summary = {'benchmark': name, 'model': args.model, 'n': len(records),
                'acc': round(acc * 100, 2), 'api_errors': fails,
                'truncated_thinking': trunc,
                'max_tokens': args.max_tokens, 'temperature': args.temperature,
@@ -288,8 +307,17 @@ async def evaluate(name, items, prompts, golds, args, out_dir):
                'wall_min': round(wall_min, 2),
                'completion_tokens_total': tot_completion,
                'agg_toks_per_s': round(tot_completion / (wall_min * 60), 1) if wall_min else 0}
+    if fails:
+        # An incomplete run must never read as a (low) accuracy result.
+        summary['incomplete'] = True
+        first_err = next((r['reasoning'] for r in records if r['reasoning'].startswith('__ERROR__')), '')
+        print(f'[{name}] INCOMPLETE: {fails}/{len(records)} requests failed after retries '
+              f'(first: {first_err[:200]}); the accuracy above excludes nothing — '
+              'failed samples are scored as wrong. Fix the service and re-run.',
+              file=sys.stderr, flush=True)
     (out_path / f'{name}_summary.json').write_text(json.dumps(summary, ensure_ascii=False, indent=1))
     print(json.dumps(summary, ensure_ascii=False))
+    return summary
 
 
 def main():
@@ -390,7 +418,8 @@ def main():
         prompts = [prompts[i] for i in indices]
         golds = [golds[i] for i in indices]
     print(f'{args.benchmark}: {len(prompts)} samples', flush=True)
-    asyncio.run(evaluate(args.benchmark, items, prompts, golds, args, args.out_dir))
+    summary = asyncio.run(evaluate(args.benchmark, items, prompts, golds, args, args.out_dir))
+    return 2 if summary.get('incomplete') else 0
 
 
 if __name__ == '__main__':

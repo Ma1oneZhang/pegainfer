@@ -40,13 +40,13 @@ def extract(bench, item, text):
     return pred or ''
 
 
-async def run(base_url, model, rows, bench, max_tokens, concurrency, timeout):
+async def run(base_url, model, temperature, rows, bench, max_tokens, concurrency, timeout):
     sem = asyncio.Semaphore(concurrency)
     async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
         async def one(row):
             async with sem:
                 payload = {'model': model, 'max_tokens': max_tokens,
-                           'temperature': 0.0, 'top_p': 1.0,
+                           'temperature': temperature, 'top_p': 1.0,
                            'messages': [{'role': 'user', 'content': row['prompt']}]}
                 if STOP_MAP.get(bench):
                     payload['stop'] = STOP_MAP[bench]
@@ -76,7 +76,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('benchmark')
     ap.add_argument('--base-url', default='http://127.0.0.1:18082/v1')
-    ap.add_argument('--model', default='qwen35-27b-tp2')
+    ap.add_argument('--model', default=None,
+                    help='defaults to the model recorded in the initial run summary; '
+                         'an explicit value must match it — mixing configurations is refused')
     ap.add_argument('--out-dir', default='results/qwen35-27b-tp2-eval')
     ap.add_argument('--max-tokens', type=int, default=32768)
     ap.add_argument('--concurrency', type=int, default=48)
@@ -87,12 +89,19 @@ def main():
     samples = json.loads((out / f'{args.benchmark}_samples.json').read_text())
     summary = json.loads((out / f'{args.benchmark}_summary.json').read_text())
 
+    model = args.model or summary['model']
+    if model != summary['model']:
+        sys.exit(f"refusing to mix configurations: --model {model!r} does not match the "
+                 f"initial run's model {summary['model']!r} in "
+                 f"{out / f'{args.benchmark}_summary.json'}")
+    temperature = summary.get('temperature', 0.0)
+
     bad = [s for s in samples if not s['output']]
     print(f"{args.benchmark}: {len(samples)} total, {len(bad)} to re-run with "
-          f"max_tokens={args.max_tokens}", flush=True)
+          f"max_tokens={args.max_tokens} (model={model}, temperature={temperature})", flush=True)
     if not bad:
         return
-    fixed = asyncio.run(run(args.base_url, args.model, bad, args.benchmark,
+    fixed = asyncio.run(run(args.base_url, model, temperature, bad, args.benchmark,
                             args.max_tokens, args.concurrency, args.timeout))
     fixed_by_idx = {f['idx']: f for f in fixed}
     merged = []
@@ -106,6 +115,8 @@ def main():
     acc = round(100.0 * n_ok / len(merged), 2)
     summary.update({
         'acc_merged': acc,
+        'rerun_model': model,
+        'rerun_temperature': temperature,
         'rerun_max_tokens': args.max_tokens,
         'rerun_n': len(bad),
         'still_truncated': n_trunc_left,
