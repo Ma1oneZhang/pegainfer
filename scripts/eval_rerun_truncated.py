@@ -134,16 +134,25 @@ def main():
     n_ok = sum(1 for m in merged if m['correct'])
     n_trunc_left = sum(1 for m in merged if not m['output'])
     acc = round(100.0 * n_ok / len(merged), 2)
+    # Recompute the failure state from the merged rows; keep the initial
+    # run's counts under explicit initial_* fields instead of letting a
+    # stale incomplete flag stand after every failed row got fixed.
+    initial_errors = summary.pop('api_errors', 0)
+    summary.pop('incomplete', None)
     summary.update({
         'acc_merged': acc,
         'rerun_model': model,
         'rerun_temperature': temperature,
         'rerun_max_tokens': args.max_tokens,
+        'initial_api_errors': initial_errors,
+        'api_errors': rerun_errors,
         'rerun_errors': rerun_errors,
         'rerun_n': len(bad),
         'still_truncated': n_trunc_left,
         'completion_tokens_total_merged': sum(m.get('completion_tokens', 0) for m in merged),
     })
+    if rerun_errors:
+        summary['incomplete'] = True
     (out / f'{args.benchmark}_samples_merged.json').write_text(
         json.dumps(merged, ensure_ascii=False, indent=1))
     (out / f'{args.benchmark}_summary.json').write_text(

@@ -404,14 +404,26 @@ def main():
             rng = rnd.Random(args.seed)
             for group in strata.values():
                 rng.shuffle(group)
+            # Allocate exactly args.sample rows across strata: floor quotas
+            # first, then hand the remainder to the largest fractional parts
+            # (capacity-respecting) — never more, never fewer.
+            quota = {key: args.sample * len(strata[key]) / len(items) for key in strata}
+            take_map = {key: min(int(q), len(strata[key])) for key, q in quota.items()}
+            remaining = args.sample - sum(take_map.values())
+            frac_order = sorted(strata, key=lambda k: quota[k] % 1, reverse=True)
+            while remaining > 0:
+                for key in frac_order:
+                    if remaining == 0:
+                        break
+                    if take_map[key] < len(strata[key]):
+                        take_map[key] += 1
+                        remaining -= 1
             picked = []
             for key in sorted(strata):
-                group = strata[key]
-                take = max(1, round(args.sample * len(group) / len(items)))
-                take = min(take, len(group))
-                picked.extend(sorted(group[:take]))
+                picked.extend(sorted(strata[key][:take_map[key]]))
             indices = sorted(picked)
-            print(f'strata: {len(strata)}, picked {len(indices)} of {len(items)}', flush=True)
+            print(f'strata: {len(strata)}, picked {len(indices)} of {len(items)} '
+                  f'(requested {args.sample})', flush=True)
         elif args.limit:
             indices = indices[:args.limit]
         items = [items[i] for i in indices]

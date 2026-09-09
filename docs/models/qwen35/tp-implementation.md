@@ -659,9 +659,10 @@ the *eager* test while the graph test ran concurrently.
   not regress.
 - 27B TP2 knowledge-benchmark parity (2026-08-20, validated pre-rebase on
   the f4c66780 line; `docs/benchmarks/qwen35-27b-tp2-knowledge-eval.md`):
-  MMLU-Redux 94.09 vs official 93.2 (full 5330), C-Eval 88.11 vs 90.5
-  (full 1346, thinking-cap truncation rerun-merged) — inside the
-  cross-harness band, no TP-induced accuracy regression. MMLU-Pro /
+  C-Eval 88.11 vs official 90.5 (full 1346, thinking-cap truncation
+  rerun-merged) is inside the cross-harness band and is the current
+  evidence; the MMLU-Redux 94.09 figure was scored with the pre-fix
+  first-capital extractor — rerun-pending, do not cite. MMLU-Pro /
   SuperGPQA sampled runs remain outstanding; rerun on this rebased branch
   before citing parity.
 - P2B sharded linear-attention/GDR state landed (see "Rebase onto #870"); keep the completed P2A lifecycle and ID contracts unweakened.

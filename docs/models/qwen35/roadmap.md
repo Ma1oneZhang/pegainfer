@@ -133,8 +133,9 @@ Performance:
 
 ### Later
 
-- TP for a concrete 9B or 27B TP=2 target, then 4B TP only if same-host TP=1 vs
-  TP=2 shows value.
+- TP remaining work: group-6 batch-decode kernels so 27B TP2 can capture
+  decode CUDA Graphs, and TP perf gates (the merged-stack A/B tracked in
+  #1001); see `docs/models/qwen35/tp-implementation.md` Follow-Ups.
 - LoRA with real-adapter logprob parity.
 - Exporter-specific FP8/NVFP4/MXFP4 loading and accuracy lanes.
 - MTP/DSpark under a separate speculative path.
