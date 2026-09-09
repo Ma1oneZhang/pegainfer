@@ -62,6 +62,7 @@ async def run(base_url, model, temperature, rows, bench, max_tokens, concurrency
                                 msg = data['choices'][0]['message']
                                 usage = data.get('usage') or {}
                                 row = dict(row)
+                                row.pop('rerun_failed', None)  # success clears the stale marker
                                 row['output'] = msg.get('content') or ''
                                 row['reasoning'] = msg.get('reasoning') or ''
                                 row['completion_tokens'] = usage.get('completion_tokens') or 0
@@ -105,7 +106,15 @@ def main():
     args = ap.parse_args()
 
     out = Path(args.out_dir)
-    samples = json.loads((out / f'{args.benchmark}_samples.json').read_text())
+    # Resume from the merged state when a previous rerun already fixed some
+    # rows: regenerating them would burn the large-budget completions again
+    # and could turn a previously successful row into a failure.
+    merged_path = out / f'{args.benchmark}_samples_merged.json'
+    if merged_path.exists():
+        samples = json.loads(merged_path.read_text())
+        print(f'{args.benchmark}: resuming from {merged_path.name}', flush=True)
+    else:
+        samples = json.loads((out / f'{args.benchmark}_samples.json').read_text())
     summary = json.loads((out / f'{args.benchmark}_summary.json').read_text())
 
     model = args.model or summary['model']

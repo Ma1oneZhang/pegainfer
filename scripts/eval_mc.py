@@ -148,7 +148,11 @@ def sg_extract_labels(text, letters='ABCDEFGHIJ'):
 def sg_extract_content(text, options_content):
     if not isinstance(text, str) or not isinstance(options_content, list):
         return None
-    esc = [re.escape(o) for o in options_content]
+    esc_map = {re.escape(o): o for o in options_content}
+    # Longest-first: when one option is a prefix of another ('New York' vs
+    # 'New York City'), dataset order + the trailing-terminator class would
+    # let the shorter option match prematurely and score the wrong letter.
+    esc = sorted(esc_map, key=len, reverse=True)
     alt = '|'.join(esc)
     pats = [
         rf'[Tt]he\s+(?:\w+\s+)?(?:answer|option)(?:\w+\s+)?\s+is:?\s*(?:[\*\$\\{{\(\[\\]*?(?:(?:\\boxed|\\mathbf|\\mathrm|\\text){{)?)*\s*({alt})(?:\\?\}}?\$?\)?\]?\}}?)*(?:[\s:\.\*)]|$)',
@@ -165,8 +169,8 @@ def sg_extract_content(text, options_content):
                 m = None
             if m:
                 hit = m.group(1)
-                if hit in esc:
-                    return options_content[esc.index(hit)]
+                if hit in esc_map:
+                    return esc_map[hit]
                 return hit
     return None
 
