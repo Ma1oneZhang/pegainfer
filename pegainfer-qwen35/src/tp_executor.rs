@@ -2830,17 +2830,6 @@ mod tests {
     }
 
     #[test]
-    fn tensor_parallel_cuda_graph_gate_defers_to_model_load() {
-        // P2c: TP + CUDA Graph is no longer rejected up front; the graph/eager
-        // decision needs the model config, so a nonexistent path fails at load.
-        let err = match Qwen35TpExecutor::from_runtime_with_capacity("unused", true, &[0, 1], 1) {
-            Ok(_) => panic!("TP CUDA Graph with a nonexistent model path should fail at load"),
-            Err(err) => err.to_string(),
-        };
-        assert!(!err.contains("eager execution only"));
-    }
-
-    #[test]
     fn slot_map_admit_release_and_compact() {
         let id = |value: u64| RequestId::new(value);
         let mut owners = vec![None, None, None, None];

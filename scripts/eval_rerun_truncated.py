@@ -40,36 +40,55 @@ def extract(bench, item, text):
     return pred or ''
 
 
-async def run(base_url, model, temperature, rows, bench, max_tokens, concurrency, timeout):
+async def run(base_url, model, temperature, rows, bench, max_tokens, concurrency, timeout,
+              partial_path):
     sem = asyncio.Semaphore(concurrency)
-    async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
-        async def one(row):
-            async with sem:
-                payload = {'model': model, 'max_tokens': max_tokens,
-                           'temperature': temperature, 'top_p': 1.0,
-                           'messages': [{'role': 'user', 'content': row['prompt']}]}
-                if STOP_MAP.get(bench):
-                    payload['stop'] = STOP_MAP[bench]
-                for attempt in range(6):
-                    try:
-                        r = await client.post(f'{base_url}/chat/completions', json=payload)
-                        if r.status_code == 200:
-                            data = r.json()
-                            msg = data['choices'][0]['message']
-                            usage = data.get('usage') or {}
-                            row = dict(row)
-                            row['output'] = msg.get('content') or ''
-                            row['reasoning'] = msg.get('reasoning') or ''
-                            row['completion_tokens'] = usage.get('completion_tokens') or 0
-                            row['finish_reason'] = data['choices'][0].get('finish_reason') or ''
-                            return row
-                        err = f'HTTP {r.status_code} {r.text[:200]!r}'
-                    except Exception as e:  # noqa: BLE001
-                        err = f'{type(e).__name__}: {e!s}'
-                    await asyncio.sleep(min(2 ** attempt, 30))
-                raise RuntimeError(f"rerun failed: {err}")
+    done = 0
+    errors = 0
+    with partial_path.open('w', encoding='utf-8') as partial:
+        async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
+            async def one(row):
+                async with sem:
+                    payload = {'model': model, 'max_tokens': max_tokens,
+                               'temperature': temperature, 'top_p': 1.0,
+                               'messages': [{'role': 'user', 'content': row['prompt']}]}
+                    if STOP_MAP.get(bench):
+                        payload['stop'] = STOP_MAP[bench]
+                    for attempt in range(6):
+                        try:
+                            r = await client.post(f'{base_url}/chat/completions', json=payload)
+                            if r.status_code == 200:
+                                data = r.json()
+                                msg = data['choices'][0]['message']
+                                usage = data.get('usage') or {}
+                                row = dict(row)
+                                row['output'] = msg.get('content') or ''
+                                row['reasoning'] = msg.get('reasoning') or ''
+                                row['completion_tokens'] = usage.get('completion_tokens') or 0
+                                row['finish_reason'] = data['choices'][0].get('finish_reason') or ''
+                                return row
+                            err = f'HTTP {r.status_code} {r.text[:200]!r}'
+                        except Exception as e:  # noqa: BLE001
+                            err = f'{type(e).__name__}: {e!s}'
+                        await asyncio.sleep(min(2 ** attempt, 30))
+                    # Keep the row explicitly failed — one dead request must not
+                    # discard the rest of the batch's (expensive) completions.
+                    row = dict(row)
+                    row['reasoning'] = f'__ERROR__ {err}'
+                    row['rerun_failed'] = True
+                    return row
 
-        return await asyncio.gather(*[one(r) for r in rows])
+            out_rows = {}
+            for fut in asyncio.as_completed([one(r) for r in rows]):
+                row = await fut
+                out_rows[row['idx']] = row
+                errors += bool(row.get('rerun_failed'))
+                partial.write(json.dumps(row, ensure_ascii=False) + '\n')
+                partial.flush()
+                done += 1
+                if done % 50 == 0 or done == len(rows):
+                    print(f'[rerun] {done}/{len(rows)} rows', flush=True)
+            return [out_rows[r['idx']] for r in rows], errors
 
 
 def main():
@@ -101,8 +120,10 @@ def main():
           f"max_tokens={args.max_tokens} (model={model}, temperature={temperature})", flush=True)
     if not bad:
         return
-    fixed = asyncio.run(run(args.base_url, model, temperature, bad, args.benchmark,
-                            args.max_tokens, args.concurrency, args.timeout))
+    fixed, rerun_errors = asyncio.run(run(args.base_url, model, temperature, bad,
+                                          args.benchmark, args.max_tokens,
+                                          args.concurrency, args.timeout,
+                                          out / f'{args.benchmark}_rerun.partial.jsonl'))
     fixed_by_idx = {f['idx']: f for f in fixed}
     merged = []
     for s in samples:
@@ -118,6 +139,7 @@ def main():
         'rerun_model': model,
         'rerun_temperature': temperature,
         'rerun_max_tokens': args.max_tokens,
+        'rerun_errors': rerun_errors,
         'rerun_n': len(bad),
         'still_truncated': n_trunc_left,
         'completion_tokens_total_merged': sum(m.get('completion_tokens', 0) for m in merged),
@@ -127,9 +149,15 @@ def main():
     (out / f'{args.benchmark}_summary.json').write_text(
         json.dumps(summary, ensure_ascii=False, indent=1))
     print(json.dumps({k: summary[k] for k in ('benchmark', 'acc', 'acc_merged',
-                                              'rerun_n', 'still_truncated')},
+                                              'rerun_n', 'rerun_errors', 'still_truncated')},
                      ensure_ascii=False))
+    if rerun_errors:
+        print(f'[rerun] {rerun_errors}/{len(bad)} rows still failing after retries — '
+              'progress is on disk (merged output keeps them empty); fix the service and re-run.',
+              file=sys.stderr, flush=True)
+        return 2
+    return 0
 
 
 if __name__ == '__main__':
-    main()
+    sys.exit(main())

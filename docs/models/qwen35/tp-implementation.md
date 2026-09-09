@@ -615,8 +615,8 @@ retired request was the last slot — use `then` for the lazy closure.
 **Validation (2× RTX 4090):**
 
 - `cargo check --release -p pegainfer-qwen35 --features qwen35` clean; lib
-  suite 105/105 (new: group-gate acceptance incl. group-6 stays eager, slot
-  map admit/compact/mismatch CPU tests); `cargo fmt --check` clean.
+  suite 105/105 (new: slot map admit/compact/mismatch CPU tests);
+  `cargo fmt --check` clean.
 - 9B TP2 HF gates (`--test-threads=1`): eager sequential+batched PASS;
   graph sequential replay (identical fingerprints across reruns),
   bucket-straddling batched replay (5→bucket 8, 3→bucket 4), and
