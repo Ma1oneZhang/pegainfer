@@ -265,6 +265,11 @@ async def run_completion(client, base_url, model, prompt, max_tokens, temperatur
 async def evaluate(name, items, prompts, golds, args, out_dir):
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
+    # A fresh evaluation supersedes any rerun artifacts in this directory:
+    # the rerun script would otherwise resume from (and attribute to this
+    # fresh summary) merged rows that belong to an older run.
+    for stale in (f'{name}_samples_merged.json', f'{name}_rerun.partial.jsonl'):
+        (out_path / stale).unlink(missing_ok=True)
     # Persist every sample as it completes, so a killed/crashed run keeps what
     # it already paid for; the canonical pretty file is written at the end.
     partial_path = out_path / f'{name}_samples.partial.jsonl'

@@ -43,9 +43,26 @@ def extract(bench, item, text):
 async def run(base_url, model, temperature, rows, bench, max_tokens, concurrency, timeout,
               partial_path):
     sem = asyncio.Semaphore(concurrency)
+    # Recover rows from a killed previous attempt before touching the
+    # checkpoint: the partial JSONL is appended to, never truncated.
+    out_rows = {}
+    if partial_path.exists():
+        for line in partial_path.read_text(encoding='utf-8').splitlines():
+            try:
+                prev = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # torn tail write of the killed run
+            if prev.get('output') and not prev.get('rerun_failed'):
+                out_rows[prev['idx']] = prev
+        if out_rows:
+            print(f'[rerun] recovered {len(out_rows)} completed rows from {partial_path.name}',
+                  flush=True)
+    todo = [r for r in rows if r['idx'] not in out_rows]
     done = 0
     errors = 0
-    with partial_path.open('w', encoding='utf-8') as partial:
+    with partial_path.open('a', encoding='utf-8') as partial:
+        if not todo:
+            return [out_rows[r['idx']] for r in rows], errors
         async with httpx.AsyncClient(timeout=httpx.Timeout(timeout)) as client:
             async def one(row):
                 async with sem:
@@ -79,16 +96,16 @@ async def run(base_url, model, temperature, rows, bench, max_tokens, concurrency
                     row['rerun_failed'] = True
                     return row
 
-            out_rows = {}
-            for fut in asyncio.as_completed([one(r) for r in rows]):
+            for fut in asyncio.as_completed([one(r) for r in todo]):
                 row = await fut
                 out_rows[row['idx']] = row
                 errors += bool(row.get('rerun_failed'))
                 partial.write(json.dumps(row, ensure_ascii=False) + '\n')
                 partial.flush()
                 done += 1
-                if done % 50 == 0 or done == len(rows):
-                    print(f'[rerun] {done}/{len(rows)} rows', flush=True)
+                if done % 50 == 0 or done == len(todo):
+                    print(f'[rerun] {done}/{len(todo)} new rows '
+                          f'({len(out_rows)}/{len(rows)} total)', flush=True)
             return [out_rows[r['idx']] for r in rows], errors
 
 
@@ -108,13 +125,26 @@ def main():
     out = Path(args.out_dir)
     # Resume from the merged state when a previous rerun already fixed some
     # rows: regenerating them would burn the large-budget completions again
-    # and could turn a previously successful row into a failure.
+    # and could turn a previously successful row into a failure. The merged
+    # file must provably belong to the current base samples (a fresh
+    # evaluation in this directory would have been overwritten by eval_mc
+    # but the stale merged file could linger otherwise) — validate the
+    # length and per-row prompt linkage before trusting it.
+    base_samples = json.loads((out / f'{args.benchmark}_samples.json').read_text())
     merged_path = out / f'{args.benchmark}_samples_merged.json'
     if merged_path.exists():
-        samples = json.loads(merged_path.read_text())
+        candidate = json.loads(merged_path.read_text())
+        linked = (len(candidate) == len(base_samples)
+                  and all(c.get('prompt') == b.get('prompt')
+                          for c, b in zip(candidate, base_samples)))
+        if not linked:
+            sys.exit(f'refusing to resume from {merged_path}: it does not match the '
+                     'current base samples (stale rerun data from an older run). '
+                     'Re-run eval_mc.py (it now clears stale rerun artifacts) or remove the file.')
+        samples = candidate
         print(f'{args.benchmark}: resuming from {merged_path.name}', flush=True)
     else:
-        samples = json.loads((out / f'{args.benchmark}_samples.json').read_text())
+        samples = base_samples
     summary = json.loads((out / f'{args.benchmark}_summary.json').read_text())
 
     model = args.model or summary['model']
@@ -145,8 +175,14 @@ def main():
     acc = round(100.0 * n_ok / len(merged), 2)
     # Recompute the failure state from the merged rows; keep the initial
     # run's counts under explicit initial_* fields instead of letting a
-    # stale incomplete flag stand after every failed row got fixed.
-    initial_errors = summary.pop('api_errors', 0)
+    # stale incomplete flag stand after every failed row got fixed. A retry
+    # after a partially-failed rerun already recorded initial_api_errors —
+    # keep that history, only refresh the current failure count.
+    initial_errors = summary.get('initial_api_errors')
+    if initial_errors is None:
+        initial_errors = summary.pop('api_errors', 0)
+    else:
+        summary.pop('api_errors', None)
     summary.pop('incomplete', None)
     summary.update({
         'acc_merged': acc,
