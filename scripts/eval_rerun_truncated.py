@@ -15,7 +15,7 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
-from eval_mc import (first_capital, mmlupro_extract,
+from eval_mc import (first_capital, mmlupro_extract, repair_jsonl_tail,
                      sg_extract_labels, sg_extract_content, STOP_MAP)
 import httpx
 
@@ -47,11 +47,12 @@ async def run(base_url, model, temperature, rows, bench, max_tokens, concurrency
     # checkpoint: the partial JSONL is appended to, never truncated.
     out_rows = {}
     if partial_path.exists():
+        repair_jsonl_tail(partial_path, 'rerun')
         for line in partial_path.read_text(encoding='utf-8').splitlines():
             try:
                 prev = json.loads(line)
             except json.JSONDecodeError:
-                continue  # torn tail write of the killed run
+                continue  # defensive: repair_jsonl_tail cleaned the file
             if prev.get('output') and not prev.get('rerun_failed'):
                 out_rows[prev['idx']] = prev
         if out_rows:
@@ -84,6 +85,13 @@ async def run(base_url, model, temperature, rows, bench, max_tokens, concurrency
                                 row['reasoning'] = msg.get('reasoning') or ''
                                 row['completion_tokens'] = usage.get('completion_tokens') or 0
                                 row['finish_reason'] = data['choices'][0].get('finish_reason') or ''
+                                # Score before persisting: the checkpoint must
+                                # never hold new text next to the old verdict
+                                # (the final merge rescores too, but a killed
+                                # run leaves this partial file as the record).
+                                row['pred'] = extract(bench, row, row['output'])
+                                row['correct'] = (row['pred'].lower()
+                                                  == row['gold'].lower())
                                 return row
                             err = f'HTTP {r.status_code} {r.text[:200]!r}'
                         except Exception as e:  # noqa: BLE001

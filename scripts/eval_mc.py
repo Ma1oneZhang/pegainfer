@@ -264,6 +264,49 @@ async def run_completion(client, base_url, model, prompt, max_tokens, temperatur
     return {'content': '', 'reasoning': '__ERROR__'}
 
 
+def repair_jsonl_tail(path, tag):
+    """Restore JSONL record boundaries in a checkpoint before appending.
+
+    A killed run can leave a torn final record (a partial JSON object with
+    no trailing newline); the next append would glue onto that fragment, and
+    the following resume would then discard the glued-together line — losing
+    a completed sample. An unparseable line that does end with a newline is
+    not an interrupted tail but real corruption; drop it too, and say so on
+    stderr instead of silently skipping it. Leaves an already-clean file
+    untouched.
+    """
+    text = path.read_text(encoding='utf-8')
+    if not text:
+        return
+    lines = text.split('\n')
+    tail = ''
+    if text.endswith('\n'):
+        lines.pop()  # split artefact: '' after the final newline
+    else:
+        tail = lines.pop()
+    keep = []
+    corrupt = 0
+    for line in lines:
+        try:
+            json.loads(line)
+            keep.append(line)
+        except json.JSONDecodeError:
+            corrupt += 1
+    if tail:
+        try:
+            json.loads(tail)
+            keep.append(tail)  # complete record that only lacked its newline
+        except json.JSONDecodeError:
+            pass  # interrupted final write of the killed run: drop the chip
+    if not corrupt and not tail:
+        return
+    if corrupt:
+        print(f'[{tag}] {path.name}: dropped {corrupt} malformed complete '
+              'line(s) — checkpoint corruption, not an interrupted tail',
+              file=sys.stderr, flush=True)
+    path.write_text('\n'.join(keep) + ('\n' if keep else ''), encoding='utf-8')
+
+
 async def evaluate(name, items, prompts, golds, args, out_dir):
     out_path = Path(out_dir)
     out_path.mkdir(parents=True, exist_ok=True)
@@ -296,19 +339,33 @@ async def evaluate(name, items, prompts, golds, args, out_dir):
               'run configuration; starting fresh', file=sys.stderr, flush=True)
         partial_path.unlink()
     if partial_path.exists():
+        repair_jsonl_tail(partial_path, name)
         for line in partial_path.read_text(encoding='utf-8').splitlines():
             try:
                 prev = json.loads(line)
             except json.JSONDecodeError:
-                continue  # torn tail write of the killed run
+                continue  # defensive: repair_jsonl_tail cleaned the file
             i = prev.get('idx')
             if (isinstance(i, int) and i < len(prompts)
                     and prev.get('prompt') == prompts[i]
                     and not prev.get('reasoning', '').startswith('__ERROR__')):
-                done_rows[i] = prev
+                # Reuse the generated text but never the saved pred/gold/
+                # correct: rescore with the current extractor and golds, so
+                # a fixed extractor or a corrected dataset answer lands in
+                # the accuracy without regenerating the expensive answer.
+                rec, _, _, _ = make_record(name, i, items[i], prompts[i],
+                                           golds[i],
+                                           {'content': prev.get('output', ''),
+                                            'reasoning': prev.get('reasoning', ''),
+                                            'completion_tokens':
+                                                prev.get('completion_tokens', 0),
+                                            'finish_reason':
+                                                prev.get('finish_reason', '')})
+                done_rows[i] = rec
         if done_rows:
             print(f'[{name}] recovered {len(done_rows)} completed samples from '
-                  f'{partial_path.name}', flush=True)
+                  f'{partial_path.name} (rescored with current extractor)',
+                  flush=True)
     # Claim the checkpoint for this run before appending to it.
     config_path.write_text(fingerprint, encoding='utf-8')
     records = list(done_rows.values())
@@ -316,6 +373,7 @@ async def evaluate(name, items, prompts, golds, args, out_dir):
     fails = 0
     trunc = sum(1 for r in records if not r['output'] and r['reasoning'])
     t0 = time.time()
+    n_new_tokens = 0
     with partial_path.open('a', encoding='utf-8') as partial:
         todo = [(i, p) for i, p in enumerate(prompts) if i not in done_rows]
         done = len(done_rows)
@@ -336,6 +394,7 @@ async def evaluate(name, items, prompts, golds, args, out_dir):
                     n_correct += ok
                     fails += err
                     trunc += cut
+                    n_new_tokens += rec.get('completion_tokens', 0)
                     done += 1
                     if done % 200 == 0 or done == len(prompts):
                         print(f'[{name}] {done}/{len(prompts)} '
@@ -353,8 +412,16 @@ async def evaluate(name, items, prompts, golds, args, out_dir):
                'concurrency': args.concurrency,
                'sample': args.sample or None, 'seed': args.seed,
                'wall_min': round(wall_min, 2),
+               'recovered_samples': len(done_rows),
                'completion_tokens_total': tot_completion,
-               'agg_toks_per_s': round(tot_completion / (wall_min * 60), 1) if wall_min else 0}
+               'completion_tokens_this_run': n_new_tokens}
+    # A throughput rate must pair tokens with the interval that produced
+    # them: completion_tokens_total may include rows recovered from a killed
+    # run, while wall_min measures only this invocation. Rate only what this
+    # run generated; omit the field when it generated nothing (a fully
+    # cached resume makes no requests, so there is no interval to rate).
+    if n_new_tokens and wall_min:
+        summary['agg_toks_per_s'] = round(n_new_tokens / (wall_min * 60), 1)
     if fails:
         # An incomplete run must never read as a (low) accuracy result.
         summary['incomplete'] = True
