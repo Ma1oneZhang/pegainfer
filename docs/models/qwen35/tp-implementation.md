@@ -139,7 +139,7 @@ Stable test knobs:
 
 ## Phase 2 Progress
 
-Phase 2 is locked in `docs/models/qwen35/tp-design.md` as two separate implementation series: P2a is eager mixed unified execution on the replicated Phase 1 GDR path; P2b shards the head-indexed linear-attention/GDR weight and state surface. P2a protocol/lifecycle gates are complete, and P2b's core sharding has landed on top of them without weakening the P2A lifecycle and ID contracts (see below). Batched eager TP decode (#1004) has landed on top of P2b (see below); the remaining Phase 2 work is TP CUDA Graph (#1005).
+Phase 2 is locked in `docs/models/qwen35/tp-design.md` as two separate implementation series: P2a is eager mixed unified execution on the replicated Phase 1 GDR path; P2b shards the head-indexed linear-attention/GDR weight and state surface. P2a protocol/lifecycle gates are complete, and P2b's core sharding has landed on top of them without weakening the P2A lifecycle and ID contracts (see below). Batched eager TP decode (#1004) and P2c TP decode CUDA Graphs (#1005, compiled decode GQA groups only — 4B/9B TP2 capture, 27B group-6 stays eager) have landed on top of P2b (see below); the remaining Phase 2 work is group-6 batch-decode kernels so 27B TP2 can capture, plus TP perf gates.
 
 ### P2a: TP mixed-step unified execution
 
