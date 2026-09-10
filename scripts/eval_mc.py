@@ -8,7 +8,9 @@ Recipes copied from the canonical harnesses so scores stay comparable:
                    extract_option_labels -> (A..J), content fallback)
   * MMLU-Pro    -> lm-eval mmlu_pro (5-shot CoT from validation split,
                    'answer is \\(?(X)\\)?' extraction)
-  * MMLU-Redux  -> lm-eval mmlu_redux_generative (0-shot, first [ABCD] extraction)
+  * MMLU-Redux  -> lm-eval mmlu_redux_generative (0-shot; marker-preferring
+                   label extraction — a first-anywhere [ABCD] search mis-scores
+                   "Answer: B" as the "A" of "Answer")
 
 All four go through /v1/chat/completions with one user message; Qwen3.5 is a
 thinking model so reasoning lands in `reasoning`, the final answer text in
