@@ -275,32 +275,53 @@ async def evaluate(name, items, prompts, golds, args, out_dir):
     partial_path = out_path / f'{name}_samples.partial.jsonl'
     sem = asyncio.Semaphore(args.concurrency)
     limits = httpx.Limits(max_connections=args.concurrency)
-    records = []
-    n_correct, fails, trunc = 0, 0, 0
+    # Recover rows from a killed previous attempt before touching the
+    # checkpoint (appended to, never truncated). Only rows whose prompt still
+    # matches this invocation and which are not API errors are reused.
+    done_rows = {}
+    if partial_path.exists():
+        for line in partial_path.read_text(encoding='utf-8').splitlines():
+            try:
+                prev = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # torn tail write of the killed run
+            i = prev.get('idx')
+            if (isinstance(i, int) and i < len(prompts)
+                    and prev.get('prompt') == prompts[i]
+                    and not prev.get('reasoning', '').startswith('__ERROR__')):
+                done_rows[i] = prev
+        if done_rows:
+            print(f'[{name}] recovered {len(done_rows)} completed samples from '
+                  f'{partial_path.name}', flush=True)
+    records = list(done_rows.values())
+    n_correct = sum(1 for r in records if r['correct'])
+    fails = 0
+    trunc = sum(1 for r in records if not r['output'] and r['reasoning'])
     t0 = time.time()
-    with partial_path.open('w', encoding='utf-8') as partial:
-        async with httpx.AsyncClient(timeout=httpx.Timeout(args.timeout), limits=limits) as client:
-            async def one(i, prompt):
-                async with sem:
-                    out = await run_completion(client, args.base_url, args.model,
-                                               prompt, args.max_tokens, args.temperature, name)
-                    rec, ok, cut, err = make_record(name, i, items[i], prompts[i], golds[i], out)
-                    return rec, ok, cut, err
+    with partial_path.open('a', encoding='utf-8') as partial:
+        todo = [(i, p) for i, p in enumerate(prompts) if i not in done_rows]
+        done = len(done_rows)
+        if todo:
+            async with httpx.AsyncClient(timeout=httpx.Timeout(args.timeout), limits=limits) as client:
+                async def one(i, prompt):
+                    async with sem:
+                        out = await run_completion(client, args.base_url, args.model,
+                                                   prompt, args.max_tokens, args.temperature, name)
+                        rec, ok, cut, err = make_record(name, i, items[i], prompts[i], golds[i], out)
+                        return rec, ok, cut, err
 
-            tasks = [one(i, p) for i, p in enumerate(prompts)]
-            done = 0
-            for fut in asyncio.as_completed(tasks):
-                rec, ok, cut, err = await fut
-                records.append(rec)
-                partial.write(json.dumps(rec, ensure_ascii=False) + '\n')
-                partial.flush()
-                n_correct += ok
-                fails += err
-                trunc += cut
-                done += 1
-                if done % 200 == 0 or done == len(prompts):
-                    print(f'[{name}] {done}/{len(prompts)} '
-                          f'({(time.time() - t0) / 60:.1f} min)', flush=True)
+                for fut in asyncio.as_completed([one(i, p) for i, p in todo]):
+                    rec, ok, cut, err = await fut
+                    records.append(rec)
+                    partial.write(json.dumps(rec, ensure_ascii=False) + '\n')
+                    partial.flush()
+                    n_correct += ok
+                    fails += err
+                    trunc += cut
+                    done += 1
+                    if done % 200 == 0 or done == len(prompts):
+                        print(f'[{name}] {done}/{len(prompts)} '
+                              f'({(time.time() - t0) / 60:.1f} min)', flush=True)
 
     records.sort(key=lambda r: r['idx'])
     acc = n_correct / max(len(records), 1)
