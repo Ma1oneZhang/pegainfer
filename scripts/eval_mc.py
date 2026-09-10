@@ -277,10 +277,24 @@ async def evaluate(name, items, prompts, golds, args, out_dir):
     partial_path = out_path / f'{name}_samples.partial.jsonl'
     sem = asyncio.Semaphore(args.concurrency)
     limits = httpx.Limits(max_connections=args.concurrency)
+    # Fingerprint the generation settings so the checkpoint is only resumed
+    # by the same run: prompt equality alone cannot tell apart two invocations
+    # with different --model/--temperature/--max-tokens, and mixing their rows
+    # would report the new arguments over the old run's accuracy.
+    fingerprint = json.dumps({'base_url': args.base_url, 'model': args.model,
+                              'max_tokens': args.max_tokens,
+                              'temperature': args.temperature}, sort_keys=True)
+    config_path = out_path / f'{name}_run_config.json'
     # Recover rows from a killed previous attempt before touching the
     # checkpoint (appended to, never truncated). Only rows whose prompt still
     # matches this invocation and which are not API errors are reused.
     done_rows = {}
+    same_run = (config_path.exists()
+                and config_path.read_text(encoding='utf-8') == fingerprint)
+    if partial_path.exists() and not same_run:
+        print(f'[{name}] checkpoint {partial_path.name} does not match this '
+              'run configuration; starting fresh', file=sys.stderr, flush=True)
+        partial_path.unlink()
     if partial_path.exists():
         for line in partial_path.read_text(encoding='utf-8').splitlines():
             try:
@@ -295,6 +309,8 @@ async def evaluate(name, items, prompts, golds, args, out_dir):
         if done_rows:
             print(f'[{name}] recovered {len(done_rows)} completed samples from '
                   f'{partial_path.name}', flush=True)
+    # Claim the checkpoint for this run before appending to it.
+    config_path.write_text(fingerprint, encoding='utf-8')
     records = list(done_rows.values())
     n_correct = sum(1 for r in records if r['correct'])
     fails = 0
